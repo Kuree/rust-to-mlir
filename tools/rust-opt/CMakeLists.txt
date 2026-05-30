@@ -15,11 +15,18 @@ target_link_libraries(rust-opt
   RustToLLVMRustTypedToFunc
   RustToLLVMRustTypedMemoryToLLVM
   MLIRArithDialect
+  MLIRArithToLLVM
   MLIRControlFlowDialect
+  MLIRControlFlowToLLVM
   MLIRDLTIDialect
   MLIRFuncDialect
+  MLIRFuncToLLVM
+  MLIRIndexDialect
+  MLIRIndexToLLVM
   MLIRLLVMDialect
+  MLIRReconcileUnrealizedCasts
   MLIRTransforms
+  MLIRUBToLLVM
   MLIRUBDialect
   MLIRIR
   MLIRMlirOptMain

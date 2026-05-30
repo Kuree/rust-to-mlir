@@ -31,6 +31,11 @@
 
 using namespace mlir;
 
+namespace mlir {
+#define GEN_PASS_DEF_LIFTTYPEDMIRPASS
+#include "mlir/Dialect/RustMIR/Transforms/RustMIRTransformsPasses.h.inc"
+} // namespace mlir
+
 namespace {
 struct LocalSlot {
   Value slot;
@@ -889,17 +894,8 @@ LogicalResult lowerAssert(rust::mir::AssertOp op, OpBuilder &builder,
 }
 
 struct LiftTypedMIRPass
-    : public PassWrapper<LiftTypedMIRPass, OperationPass<ModuleOp>> {
-  MLIR_DEFINE_EXPLICIT_INTERNAL_INLINE_TYPE_ID(LiftTypedMIRPass)
-
-  StringRef getArgument() const final { return "rust-lift-typed-mir"; }
-  StringRef getDescription() const final {
-    return "Lift supported rust.mir mirror ops into typed rust.typed ops";
-  }
-
-  void getDependentDialects(DialectRegistry &registry) const final {
-    registry.insert<rust::mir::RustMIRDialect>();
-  }
+    : public mlir::impl::LiftTypedMIRPassBase<LiftTypedMIRPass> {
+  using Base::Base;
 
   void runOnOperation() final {
     ModuleOp module = getOperation();
@@ -1029,8 +1025,14 @@ struct LiftTypedMIRPass
       builder.setInsertionPointToEnd(module.getBody());
     }
 
-    if (sawFailure)
+    if (sawFailure) {
       signalPassFailure();
+      return;
+    }
+
+    if (eraseSourceMIR)
+      for (rust::mir::FuncOp func : llvm::reverse(funcs))
+        func.erase();
   }
 };
 } // namespace
@@ -1039,6 +1041,4 @@ std::unique_ptr<Pass> mlir::rust::createLiftTypedMIRPass() {
   return std::make_unique<LiftTypedMIRPass>();
 }
 
-void mlir::rust::registerRustMIRPasses() {
-  PassRegistration<LiftTypedMIRPass>();
-}
+void mlir::rust::registerRustMIRPasses() { mlir::registerLiftTypedMIRPass(); }

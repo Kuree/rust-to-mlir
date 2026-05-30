@@ -4,6 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/RustTypedMemoryToLLVM/RustTypedMemoryToLLVM.h"
 #include "mlir/Conversion/RustTypedToArith/RustTypedToArith.h"
 #include "mlir/Conversion/RustTypedToControlFlow/RustTypedToControlFlow.h"
@@ -12,6 +13,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/Index/IR/IndexDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/RustMIR/IR/RustMIRDialect.h"
 #include "mlir/Dialect/RustMIR/Transforms/Passes.h"
@@ -24,8 +26,14 @@ int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::cf::ControlFlowDialect,
                   mlir::DLTIDialect, mlir::func::FuncDialect,
-                  mlir::LLVM::LLVMDialect, mlir::rust::mir::RustMIRDialect,
-                  mlir::ub::UBDialect>();
+                  mlir::index::IndexDialect, mlir::LLVM::LLVMDialect,
+                  mlir::rust::mir::RustMIRDialect, mlir::ub::UBDialect>();
+  mlir::registerArithToLLVMConversionPass();
+  mlir::registerConvertControlFlowToLLVMPass();
+  mlir::registerConvertFuncToLLVMPass();
+  mlir::registerConvertIndexToLLVMPass();
+  mlir::registerReconcileUnrealizedCasts();
+  mlir::registerUBToLLVMConversionPass();
   mlir::registerConvertRustTypedToArithPass();
   mlir::registerConvertRustTypedToControlFlowPass();
   mlir::registerConvertRustTypedToFuncPass();
