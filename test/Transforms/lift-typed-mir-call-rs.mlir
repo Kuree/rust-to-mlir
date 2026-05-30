@@ -5,7 +5,7 @@
 // CHECK: rust.typed.block 0
 // CHECK: %[[ARG:.*]] = rust.typed.load
 // CHECK: %[[CALL:.*]] = rust.typed.call @"call::inc_typed"(%[[ARG]])
-// CHECK-SAME: abi = "rust"
+// CHECK-SAME: abi = #rust.abi<rust>
 // CHECK-SAME: rust_name = "call::inc"
 // CHECK-SAME: (!rust.mir.int<"i32">) -> !rust.mir.int<"i32">
 // CHECK: rust.typed.store %[[CALL]]

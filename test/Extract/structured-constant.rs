@@ -6,7 +6,7 @@ pub fn add_flag(a: usize) -> usize {
 
 // CHECK: rust.mir.assign
 // CHECK: rust.mir.binary_op
-// CHECK-SAME: op = "BitAnd"
+// CHECK-SAME: op = #rust.binary_op<BitAnd>
 // CHECK: rust.mir.copy
 // CHECK: rust.mir.place 1
 // CHECK: rust.mir.constant

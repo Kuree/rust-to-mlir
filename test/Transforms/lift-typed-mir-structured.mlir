@@ -2,15 +2,15 @@
 
 module {
   rust.mir.func @structured attributes {arg_count = 1 : i64} {
-    rust.mir.local {index = 0 : i64, name = "_0", role = "return", rust_type = !rust.mir.int<"i32">}
-    rust.mir.local {index = 1 : i64, name = "_1", role = "arg", rust_type = !rust.mir.int<"i32">}
+    rust.mir.local {index = 0 : i64, name = "_0", role = #rust.local_role<return>, rust_type = !rust.mir.int<"i32">}
+    rust.mir.local {index = 1 : i64, name = "_1", role = #rust.local_role<arg>, rust_type = !rust.mir.int<"i32">}
     rust.mir.local {index = 2 : i64, name = "_2", rust_type = !rust.mir.int<"i32">}
     rust.mir.local {index = 3 : i64, name = "_3", rust_type = !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i32">>}
     rust.mir.block 0 {
       rust.mir.assign 0 {
         rust.mir.place 2 {
         }
-        rust.mir.binary_op attributes {op = "Add"} {
+        rust.mir.binary_op attributes {op = #rust.binary_op<Add>} {
           rust.mir.copy {
             rust.mir.place 1 {
             }
@@ -34,13 +34,13 @@ module {
   }
 
   rust.mir.func @array_static_index attributes {arg_count = 0 : i64} {
-    rust.mir.local {index = 0 : i64, name = "_0", role = "return", rust_type = !rust.mir.int<"i32">}
+    rust.mir.local {index = 0 : i64, name = "_0", role = #rust.local_role<return>, rust_type = !rust.mir.int<"i32">}
     rust.mir.local {index = 1 : i64, name = "_1", rust_type = !rust.typed.array<!rust.mir.int<"i32">, 2>}
     rust.mir.block 0 {
       rust.mir.assign 0 {
         rust.mir.place 1 {
         }
-        rust.mir.aggregate attributes {aggregate_kind = "Array"} {
+        rust.mir.aggregate attributes {aggregate_kind = #rust.aggregate_kind<Array>} {
           rust.mir.constant {debug = "1", value = 1 : i64}
           rust.mir.constant {debug = "2", value = 2 : i64}
         }
@@ -61,14 +61,14 @@ module {
   }
 
   rust.mir.func @array_static_index_ref attributes {arg_count = 0 : i64} {
-    rust.mir.local {index = 0 : i64, name = "_0", role = "return", rust_type = !rust.mir.unit}
+    rust.mir.local {index = 0 : i64, name = "_0", role = #rust.local_role<return>, rust_type = !rust.mir.unit}
     rust.mir.local {index = 1 : i64, name = "_1", rust_type = !rust.typed.array<!rust.mir.int<"i32">, 2>}
     rust.mir.local {index = 2 : i64, name = "_2", rust_type = !rust.typed.ref<"shared", !rust.mir.int<"i32">>}
     rust.mir.block 0 {
       rust.mir.assign 0 {
         rust.mir.place 1 {
         }
-        rust.mir.aggregate attributes {aggregate_kind = "Array"} {
+        rust.mir.aggregate attributes {aggregate_kind = #rust.aggregate_kind<Array>} {
           rust.mir.constant {debug = "1", value = 1 : i64}
           rust.mir.constant {debug = "2", value = 2 : i64}
         }
@@ -76,7 +76,7 @@ module {
       rust.mir.assign 1 {
         rust.mir.place 2 {
         }
-        rust.mir.ref attributes {borrow_kind = "Shared", mutability = "shared"} {
+        rust.mir.ref attributes {borrow_kind = #rust.borrow_kind<Shared>, mutability = #rust.mutability<shared>} {
           rust.mir.place 1 {
             rust.mir.projection_constant_index {from_end = false, min_length = 2 : i64, offset = 1 : i64}
           }

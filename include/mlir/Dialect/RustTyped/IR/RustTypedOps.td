@@ -8,6 +8,7 @@
 #define MLIR_DIALECT_RUST_TYPED_IR_RUSTTYPEDOPS_TD
 
 include "mlir/Dialect/RustTyped/IR/RustTypedTypes.td"
+include "mlir/Dialect/RustMIR/IR/RustAttrs.td"
 include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/MemorySlotInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
@@ -37,8 +38,8 @@ def RustTyped_LocalSlotOp : RustTyped_Op<"local_slot",
   let summary = "Typed MIR local memory slot";
   let arguments = (ins I64Attr:$index,
                        OptionalAttr<StrAttr>:$name,
-                       OptionalAttr<StrAttr>:$mutability,
-                       OptionalAttr<StrAttr>:$role,
+                       OptionalAttr<RustLocalMutabilityAttr>:$mutability,
+                       OptionalAttr<RustLocalRoleAttr>:$role,
                        OptionalAttr<StrAttr>:$span,
                        OptionalAttr<BoolAttr>:$address_taken);
   let results = (outs RustTyped_SlotType:$slot);
@@ -165,8 +166,8 @@ def RustTyped_FieldAddrOp : RustTyped_Op<"field_addr"> {
 def RustTyped_BorrowOp : RustTyped_Op<"borrow"> {
   let summary = "Create a typed Rust reference to a place address";
   let arguments = (ins AnyType:$slot,
-                       StrAttr:$borrow_kind,
-                       StrAttr:$mutability,
+                       RustBorrowKindAttr:$borrow_kind,
+                       RustMutabilityAttr:$mutability,
                        OptionalAttr<StrAttr>:$rust_region,
                        OptionalAttr<StrAttr>:$span);
   let results = (outs AnyType:$result);
@@ -177,8 +178,8 @@ def RustTyped_BorrowOp : RustTyped_Op<"borrow"> {
 def RustTyped_RawAddressOp : RustTyped_Op<"address_of"> {
   let summary = "Create a typed Rust raw pointer to a place address";
   let arguments = (ins AnyType:$slot,
-                       StrAttr:$raw_ptr_kind,
-                       StrAttr:$mutability,
+                       RustRawPtrKindAttr:$raw_ptr_kind,
+                       RustMutabilityAttr:$mutability,
                        OptionalAttr<StrAttr>:$span);
   let results = (outs AnyType:$result);
   let assemblyFormat = "$slot attr-dict `:` type($slot) `->` type($result)";
@@ -211,7 +212,7 @@ def RustTyped_TypedCallOp : RustTyped_Op<"call"> {
   let arguments = (ins FlatSymbolRefAttr:$callee,
                        Variadic<AnyType>:$args,
                        OptionalAttr<StrAttr>:$rust_name,
-                       OptionalAttr<StrAttr>:$abi,
+                       OptionalAttr<RustAbiAttr>:$abi,
                        OptionalAttr<StrAttr>:$callee_def,
                        OptionalAttr<StrAttr>:$callee_type,
                        OptionalAttr<StrAttr>:$callee_generic_args,
@@ -219,7 +220,7 @@ def RustTyped_TypedCallOp : RustTyped_Op<"call"> {
                        OptionalAttr<StrAttr>:$callee_output,
                        OptionalAttr<BoolAttr>:$c_variadic,
                        OptionalAttr<I64Attr>:$target,
-                       OptionalAttr<StrAttr>:$unwind,
+                       OptionalAttr<RustUnwindActionAttr>:$unwind,
                        OptionalAttr<StrAttr>:$span);
   let results = (outs Variadic<AnyType>:$results);
   let hasVerifier = 1;

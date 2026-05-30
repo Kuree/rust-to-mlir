@@ -2,7 +2,7 @@
 
 module {
   rust.typed.func @stored {
-    %slot = rust.typed.local_slot {index = 0 : i64, name = "_0", role = "return"} : <!rust.mir.int<"i32">>
+    %slot = rust.typed.local_slot {index = 0 : i64, name = "_0", role = #rust.local_role<return>} : <!rust.mir.int<"i32">>
     %value = rust.typed.const {debug = "7"} : !rust.mir.int<"i32">
     rust.typed.store %value, %slot : !rust.mir.int<"i32">, <!rust.mir.int<"i32">>
     %loaded = rust.typed.load %slot : <!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
@@ -26,7 +26,7 @@ module {
   }
 
   rust.typed.func @arg_slot {
-    %arg = rust.typed.local_slot {index = 1 : i64, name = "_1", role = "arg"} : <!rust.mir.int<"i32">>
+    %arg = rust.typed.local_slot {index = 1 : i64, name = "_1", role = #rust.local_role<arg>} : <!rust.mir.int<"i32">>
     %loaded = rust.typed.load %arg : <!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
     rust.typed.return %loaded : !rust.mir.int<"i32">
   }
@@ -61,6 +61,6 @@ module {
 
 // CHECK-LABEL: rust.typed.func @arg_slot
 // CHECK: %[[ARG:.*]] = rust.typed.local_slot
-// CHECK-SAME: role = "arg"
+// CHECK-SAME: role = #rust.local_role<arg>
 // CHECK: %[[LOADED:.*]] = rust.typed.load %[[ARG]]
 // CHECK: rust.typed.return %[[LOADED]]

@@ -55,8 +55,8 @@ def Rust_LocalOp : Rust_Op<"local"> {
   let arguments = (ins I64Attr:$index,
                        OptionalAttr<StrAttr>:$name,
                        OptionalAttr<AnyAttr>:$rust_type,
-                       OptionalAttr<StrAttr>:$mutability,
-                       OptionalAttr<StrAttr>:$role,
+                       OptionalAttr<RustLocalMutabilityAttr>:$mutability,
+                       OptionalAttr<RustLocalRoleAttr>:$role,
                        OptionalAttr<StrAttr>:$span);
   let assemblyFormat = "attr-dict";
 }
@@ -94,8 +94,8 @@ def Rust_UnsupportedStatementOp : Rust_MirrorOp<"unsupported_statement", "Unsupp
 // Rvalue variants.
 def Rust_AddressOfOp : Rust_Op<"address_of", [NoTerminator, SingleBlock]> {
   let summary = "MIR Rvalue::AddressOf";
-  let arguments = (ins StrAttr:$raw_ptr_kind,
-                       StrAttr:$mutability,
+  let arguments = (ins RustRawPtrKindAttr:$raw_ptr_kind,
+                       RustMutabilityAttr:$mutability,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$debug,
                        OptionalAttr<StrAttr>:$span);
@@ -104,7 +104,7 @@ def Rust_AddressOfOp : Rust_Op<"address_of", [NoTerminator, SingleBlock]> {
 }
 def Rust_AggregateOp : Rust_Op<"aggregate", [NoTerminator, SingleBlock]> {
   let summary = "MIR Rvalue::Aggregate";
-  let arguments = (ins StrAttr:$aggregate_kind,
+  let arguments = (ins RustAggregateKindAttr:$aggregate_kind,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$span);
   let regions = (region SizedRegion<1>:$body);
@@ -112,7 +112,7 @@ def Rust_AggregateOp : Rust_Op<"aggregate", [NoTerminator, SingleBlock]> {
 }
 def Rust_BinaryOp : Rust_Op<"binary_op", [NoTerminator, SingleBlock]> {
   let summary = "MIR Rvalue::BinaryOp";
-  let arguments = (ins StrAttr:$op,
+  let arguments = (ins RustBinaryOpKindAttr:$op,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$span);
   let regions = (region SizedRegion<1>:$body);
@@ -121,7 +121,7 @@ def Rust_BinaryOp : Rust_Op<"binary_op", [NoTerminator, SingleBlock]> {
 def Rust_CastOp : Rust_MirrorOp<"cast", "MIR Rvalue::Cast">;
 def Rust_CheckedBinaryOp : Rust_Op<"checked_binary_op", [NoTerminator, SingleBlock]> {
   let summary = "MIR Rvalue::CheckedBinaryOp";
-  let arguments = (ins StrAttr:$op,
+  let arguments = (ins RustBinaryOpKindAttr:$op,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$span);
   let regions = (region SizedRegion<1>:$body);
@@ -132,8 +132,8 @@ def Rust_DiscriminantOp : Rust_MirrorOp<"discriminant", "MIR Rvalue::Discriminan
 def Rust_LenOp : Rust_MirrorOp<"len", "MIR Rvalue::Len">;
 def Rust_RefOp : Rust_Op<"ref", [NoTerminator, SingleBlock]> {
   let summary = "MIR Rvalue::Ref";
-  let arguments = (ins StrAttr:$borrow_kind,
-                       StrAttr:$mutability,
+  let arguments = (ins RustBorrowKindAttr:$borrow_kind,
+                       RustMutabilityAttr:$mutability,
                        OptionalAttr<StrAttr>:$rust_region,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$debug,
@@ -147,7 +147,7 @@ def Rust_ThreadLocalRefOp : Rust_MirrorOp<"thread_local_ref", "MIR Rvalue::Threa
 def Rust_NullaryOp : Rust_MirrorOp<"nullary_op", "MIR Rvalue::NullaryOp">;
 def Rust_UnaryOp : Rust_Op<"unary_op", [NoTerminator, SingleBlock]> {
   let summary = "MIR Rvalue::UnaryOp";
-  let arguments = (ins StrAttr:$op,
+  let arguments = (ins RustUnaryOpKindAttr:$op,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$span);
   let regions = (region SizedRegion<1>:$body);
@@ -194,14 +194,14 @@ def Rust_CallOp : Rust_Op<"call", [NoTerminator, SingleBlock]> {
   let arguments = (ins OptionalAttr<I64Attr>:$target,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$debug,
-                       OptionalAttr<StrAttr>:$unwind,
+                       OptionalAttr<RustUnwindActionAttr>:$unwind,
                        OptionalAttr<StrAttr>:$callee_name,
                        OptionalAttr<StrAttr>:$callee_def,
                        OptionalAttr<StrAttr>:$callee_type,
                        OptionalAttr<StrAttr>:$callee_generic_args,
                        OptionalAttr<StrAttr>:$callee_inputs,
                        OptionalAttr<StrAttr>:$callee_output,
-                       OptionalAttr<StrAttr>:$callee_abi,
+                       OptionalAttr<RustAbiAttr>:$callee_abi,
                        OptionalAttr<BoolAttr>:$callee_c_variadic,
                        OptionalAttr<StrAttr>:$span);
   let regions = (region SizedRegion<1>:$body);

@@ -8,6 +8,7 @@
 #define MLIR_DIALECT_RUSTMIR_IR_RUSTTYPES_TD
 
 include "mlir/IR/AttrTypeBase.td"
+include "mlir/Dialect/RustMIR/IR/RustAttrs.td"
 include "mlir/Dialect/RustMIR/IR/RustMIRDialect.td"
 
 class Rust_Type<string name, string typeMnemonic, list<Trait> traits = []>

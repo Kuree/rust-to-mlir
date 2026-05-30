@@ -147,8 +147,8 @@ std::optional<std::string> extractCallRustName(rust::mir::CallOp call) {
 }
 
 bool isCAbiCall(rust::mir::CallOp call) {
-  if (std::optional<StringRef> abi = call.getCalleeAbi())
-    return *abi == "c";
+  if (std::optional<rust::mir::RustAbi> abi = call.getCalleeAbi())
+    return *abi == rust::mir::RustAbi::C;
   if (std::optional<std::string> rustName = extractCallRustName(call))
     return StringRef(*rustName).contains("__rust_to_llvm_");
   return false;
@@ -402,88 +402,89 @@ std::optional<Value> materializeOperand(Operation *operand, OpBuilder &builder,
 
 std::optional<Value> createTypedBinaryOp(OpBuilder &builder, Location loc,
                                          Type resultType, Value lhs, Value rhs,
-                                         StringRef op, StringAttr spanAttr) {
-  if (op == "Add")
+                                         rust::mir::RustBinaryOpKind op,
+                                         StringAttr spanAttr) {
+  if (op == rust::mir::RustBinaryOpKind::Add)
     return mlir::rust::createOp<rust::mir::AddOp>(builder, loc, resultType, lhs,
                                                   rhs, spanAttr)
         .getResult();
-  if (op == "AddUnchecked")
+  if (op == rust::mir::RustBinaryOpKind::AddUnchecked)
     return mlir::rust::createOp<rust::mir::AddUncheckedOp>(
                builder, loc, resultType, lhs, rhs, spanAttr)
         .getResult();
-  if (op == "Sub")
+  if (op == rust::mir::RustBinaryOpKind::Sub)
     return mlir::rust::createOp<rust::mir::SubOp>(builder, loc, resultType, lhs,
                                                   rhs, spanAttr)
         .getResult();
-  if (op == "SubUnchecked")
+  if (op == rust::mir::RustBinaryOpKind::SubUnchecked)
     return mlir::rust::createOp<rust::mir::SubUncheckedOp>(
                builder, loc, resultType, lhs, rhs, spanAttr)
         .getResult();
-  if (op == "Mul")
+  if (op == rust::mir::RustBinaryOpKind::Mul)
     return mlir::rust::createOp<rust::mir::MulOp>(builder, loc, resultType, lhs,
                                                   rhs, spanAttr)
         .getResult();
-  if (op == "MulUnchecked")
+  if (op == rust::mir::RustBinaryOpKind::MulUnchecked)
     return mlir::rust::createOp<rust::mir::MulUncheckedOp>(
                builder, loc, resultType, lhs, rhs, spanAttr)
         .getResult();
-  if (op == "Div")
+  if (op == rust::mir::RustBinaryOpKind::Div)
     return mlir::rust::createOp<rust::mir::DivOp>(builder, loc, resultType, lhs,
                                                   rhs, spanAttr)
         .getResult();
-  if (op == "Rem")
+  if (op == rust::mir::RustBinaryOpKind::Rem)
     return mlir::rust::createOp<rust::mir::RemOp>(builder, loc, resultType, lhs,
                                                   rhs, spanAttr)
         .getResult();
-  if (op == "BitAnd")
+  if (op == rust::mir::RustBinaryOpKind::BitAnd)
     return mlir::rust::createOp<rust::mir::BitAndOp>(builder, loc, resultType,
                                                      lhs, rhs, spanAttr)
         .getResult();
-  if (op == "BitOr")
+  if (op == rust::mir::RustBinaryOpKind::BitOr)
     return mlir::rust::createOp<rust::mir::BitOrOp>(builder, loc, resultType,
                                                     lhs, rhs, spanAttr)
         .getResult();
-  if (op == "BitXor")
+  if (op == rust::mir::RustBinaryOpKind::BitXor)
     return mlir::rust::createOp<rust::mir::BitXorOp>(builder, loc, resultType,
                                                      lhs, rhs, spanAttr)
         .getResult();
-  if (op == "Shl")
+  if (op == rust::mir::RustBinaryOpKind::Shl)
     return mlir::rust::createOp<rust::mir::ShlOp>(builder, loc, resultType, lhs,
                                                   rhs, spanAttr)
         .getResult();
-  if (op == "ShlUnchecked")
+  if (op == rust::mir::RustBinaryOpKind::ShlUnchecked)
     return mlir::rust::createOp<rust::mir::ShlUncheckedOp>(
                builder, loc, resultType, lhs, rhs, spanAttr)
         .getResult();
-  if (op == "Shr")
+  if (op == rust::mir::RustBinaryOpKind::Shr)
     return mlir::rust::createOp<rust::mir::ShrOp>(builder, loc, resultType, lhs,
                                                   rhs, spanAttr)
         .getResult();
-  if (op == "ShrUnchecked")
+  if (op == rust::mir::RustBinaryOpKind::ShrUnchecked)
     return mlir::rust::createOp<rust::mir::ShrUncheckedOp>(
                builder, loc, resultType, lhs, rhs, spanAttr)
         .getResult();
-  if (op == "Eq")
+  if (op == rust::mir::RustBinaryOpKind::Eq)
     return mlir::rust::createOp<rust::mir::EqOp>(builder, loc, resultType, lhs,
                                                  rhs, spanAttr)
         .getResult();
-  if (op == "Ne")
+  if (op == rust::mir::RustBinaryOpKind::Ne)
     return mlir::rust::createOp<rust::mir::NeOp>(builder, loc, resultType, lhs,
                                                  rhs, spanAttr)
         .getResult();
-  if (op == "Lt")
+  if (op == rust::mir::RustBinaryOpKind::Lt)
     return mlir::rust::createOp<rust::mir::LtOp>(builder, loc, resultType, lhs,
                                                  rhs, spanAttr)
         .getResult();
-  if (op == "Le")
+  if (op == rust::mir::RustBinaryOpKind::Le)
     return mlir::rust::createOp<rust::mir::LeOp>(builder, loc, resultType, lhs,
                                                  rhs, spanAttr)
         .getResult();
-  if (op == "Gt")
+  if (op == rust::mir::RustBinaryOpKind::Gt)
     return mlir::rust::createOp<rust::mir::GtOp>(builder, loc, resultType, lhs,
                                                  rhs, spanAttr)
         .getResult();
-  if (op == "Ge")
+  if (op == rust::mir::RustBinaryOpKind::Ge)
     return mlir::rust::createOp<rust::mir::GeOp>(builder, loc, resultType, lhs,
                                                  rhs, spanAttr)
         .getResult();
@@ -493,12 +494,13 @@ std::optional<Value> createTypedBinaryOp(OpBuilder &builder, Location loc,
 
 std::optional<Value> createTypedUnaryOp(OpBuilder &builder, Location loc,
                                         Type resultType, Value input,
-                                        StringRef op, StringAttr spanAttr) {
-  if (op == "Neg")
+                                        rust::mir::RustUnaryOpKind op,
+                                        StringAttr spanAttr) {
+  if (op == rust::mir::RustUnaryOpKind::Neg)
     return mlir::rust::createOp<rust::mir::NegOp>(builder, loc, resultType,
                                                   input, spanAttr)
         .getResult();
-  if (op == "Not")
+  if (op == rust::mir::RustUnaryOpKind::Not)
     return mlir::rust::createOp<rust::mir::NotOp>(builder, loc, resultType,
                                                   input, spanAttr)
         .getResult();
@@ -525,11 +527,12 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
   if (!rvalue)
     return assign.emitError("expected assignment rvalue operation");
 
-  auto lowerBinaryRvalue = [&](auto binaryRvalue, StringAttr op,
+  auto lowerBinaryRvalue = [&](auto binaryRvalue,
+                               rust::mir::RustBinaryOpKind op,
                                bool isChecked) -> LogicalResult {
     Operation *lhsOp = childAt(binaryRvalue, 0);
     Operation *rhsOp = childAt(binaryRvalue, 1);
-    if (!lhsOp || !rhsOp || !op)
+    if (!lhsOp || !rhsOp)
       return assign.emitError("expected binary operation operands");
 
     std::optional<Type> lhsInferred = inferOperandType(lhsOp, slots);
@@ -565,24 +568,24 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
 
       Value value;
       Value overflow;
-      if (op.getValue() == "Add") {
+      if (op == rust::mir::RustBinaryOpKind::Add) {
         auto checked = mlir::rust::createOp<rust::mir::CheckedAddOp>(
             builder, loc, resultType, overflowType, *lhs, *rhs, spanAttr);
         value = checked.getValue();
         overflow = checked.getOverflow();
-      } else if (op.getValue() == "Sub") {
+      } else if (op == rust::mir::RustBinaryOpKind::Sub) {
         auto checked = mlir::rust::createOp<rust::mir::CheckedSubOp>(
             builder, loc, resultType, overflowType, *lhs, *rhs, spanAttr);
         value = checked.getValue();
         overflow = checked.getOverflow();
-      } else if (op.getValue() == "Mul") {
+      } else if (op == rust::mir::RustBinaryOpKind::Mul) {
         auto checked = mlir::rust::createOp<rust::mir::CheckedMulOp>(
             builder, loc, resultType, overflowType, *lhs, *rhs, spanAttr);
         value = checked.getValue();
         overflow = checked.getOverflow();
       } else {
         return assign.emitError("unsupported checked binary op: ")
-               << op.getValue();
+               << rust::mir::stringifyRustBinaryOpKind(op);
       }
 
       Value tuple = mlir::rust::createOp<rust::mir::MakeAggregateOp>(
@@ -594,22 +597,23 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     }
 
     std::optional<Value> result = createTypedBinaryOp(
-        builder, loc, resultType, *lhs, *rhs, op.getValue(), spanAttr);
+        builder, loc, resultType, *lhs, *rhs, op, spanAttr);
     if (!result)
-      return assign.emitError("unsupported binary op: ") << op.getValue();
+      return assign.emitError("unsupported binary op: ")
+             << rust::mir::stringifyRustBinaryOpKind(op);
     createStore(builder, loc, *result, *dest);
     return success();
   };
 
   if (auto binary = dyn_cast<rust::mir::BinaryOp>(rvalue))
-    return lowerBinaryRvalue(binary, binary.getOpAttr(), false);
+    return lowerBinaryRvalue(binary, binary.getOp(), false);
   if (auto checked = dyn_cast<rust::mir::CheckedBinaryOp>(rvalue))
-    return lowerBinaryRvalue(checked, checked.getOpAttr(), true);
+    return lowerBinaryRvalue(checked, checked.getOp(), true);
 
   if (auto unary = dyn_cast<rust::mir::UnaryOp>(rvalue)) {
-    StringAttr op = unary.getOpAttr();
+    rust::mir::RustUnaryOpKind op = unary.getOp();
     Operation *operandOp = childAt(unary, 0);
-    if (!operandOp || !op)
+    if (!operandOp)
       return assign.emitError("expected unary operation operand");
 
     std::optional<Value> operand =
@@ -620,25 +624,27 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
 
     std::optional<Value> result =
         createTypedUnaryOp(builder, assign.getLoc(), dest->elementType,
-                           *operand, op.getValue(), assign.getSpanAttr());
+                           *operand, op, assign.getSpanAttr());
     if (!result)
-      return assign.emitError("unsupported unary op: ") << op.getValue();
+      return assign.emitError("unsupported unary op: ")
+             << rust::mir::stringifyRustUnaryOpKind(op);
     createStore(builder, assign.getLoc(), *result, *dest);
     return success();
   }
 
   if (auto aggregate = dyn_cast<rust::mir::AggregateOp>(rvalue)) {
-    StringRef aggregateKind = aggregate.getAggregateKind();
-    if ((aggregateKind != "Tuple" && aggregateKind != "Array") ||
+    rust::mir::RustAggregateKind aggregateKind = aggregate.getAggregateKind();
+    if ((aggregateKind != rust::mir::RustAggregateKind::Tuple &&
+         aggregateKind != rust::mir::RustAggregateKind::Array) ||
         aggregate.getBody().empty())
       return assign.emitError("only tuple and array aggregate rvalues can be "
                               "lifted");
 
     auto tupleType = dyn_cast<rust::mir::TypedTupleType>(dest->elementType);
     auto arrayType = dyn_cast<rust::mir::TypedArrayType>(dest->elementType);
-    if (aggregateKind == "Tuple" && !tupleType)
+    if (aggregateKind == rust::mir::RustAggregateKind::Tuple && !tupleType)
       return assign.emitError("tuple aggregate destination is not a tuple");
-    if (aggregateKind == "Array" && !arrayType)
+    if (aggregateKind == rust::mir::RustAggregateKind::Array && !arrayType)
       return assign.emitError("array aggregate destination is not an array");
 
     SmallVector<Value> operands;
@@ -812,6 +818,9 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
 
   StringRef rustNameRef(*rustName);
   bool isCAbi = isCAbiCall(op);
+  rust::mir::RustAbiAttr abiAttr = rust::mir::RustAbiAttr::get(
+      op.getContext(),
+      isCAbi ? rust::mir::RustAbi::C : rust::mir::RustAbi::Rust);
   std::optional<StringRef> calleeType = op.getCalleeType();
   std::string callee =
       isCAbi ? getCAbiSymbol(rustNameRef)
@@ -819,8 +828,7 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
   auto typedCall = mlir::rust::createOp<rust::mir::TypedCallOp>(
       builder, loc, resultTypes,
       FlatSymbolRefAttr::get(op.getContext(), callee), args,
-      builder.getStringAttr(*rustName),
-      builder.getStringAttr(isCAbi ? "c" : "rust"), op.getCalleeDefAttr(),
+      builder.getStringAttr(*rustName), abiAttr, op.getCalleeDefAttr(),
       op.getCalleeTypeAttr(), op.getCalleeGenericArgsAttr(),
       op.getCalleeInputsAttr(), op.getCalleeOutputAttr(),
       op.getCalleeCVariadicAttr(), op.getTargetAttr(), op.getUnwindAttr(),

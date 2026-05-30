@@ -10,6 +10,11 @@
 #include "mlir/IR/BuiltinTypes.h"
 #include "mlir/Interfaces/MemorySlotInterfaces.h"
 
+#include "mlir/Dialect/RustMIR/IR/RustEnums.h.inc"
+
+#define GET_ATTRDEF_CLASSES
+#include "mlir/Dialect/RustMIR/IR/RustAttrs.h.inc"
+
 #define GET_TYPEDEF_CLASSES
 #include "mlir/Dialect/RustMIR/IR/RustOpsTypes.h.inc"
 

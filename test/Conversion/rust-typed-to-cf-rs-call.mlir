@@ -5,9 +5,9 @@
 // CHECK-SAME: (%{{.*}}: i32) -> i32
 // CHECK: %[[ARG:.*]] = rust.typed.load
 // CHECK: %[[CALL:.*]] = call @"call::inc_typed"(%[[ARG]])
-// CHECK-SAME: rust.abi = "rust"
+// CHECK-SAME: rust.abi = #rust.abi<rust>
 // CHECK-SAME: rust.rust_name = "call::inc"
 // CHECK-SAME: rust.target = 1 : i64
-// CHECK-SAME: rust.unwind = "Continue"
+// CHECK-SAME: rust.unwind = #rust.unwind<Continue>
 // CHECK-SAME: (i32) -> i32
 // CHECK: return %[[CALL]] : i32

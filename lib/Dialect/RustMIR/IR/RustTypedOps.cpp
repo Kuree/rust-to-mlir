@@ -28,8 +28,8 @@ using namespace mlir::rust::mir;
 
 namespace {
 bool isArgumentSlot(LocalSlotOp op) {
-  if (std::optional<llvm::StringRef> role = op.getRole())
-    return *role == "arg";
+  if (std::optional<RustLocalRole> role = op.getRole())
+    return *role == RustLocalRole::Arg;
   return false;
 }
 
@@ -170,7 +170,7 @@ LogicalResult BorrowOp::verify() {
   if (pointeeType != resultType.getPointeeType())
     return emitOpError("operand element type must match reference pointee "
                        "type");
-  if (getMutability() != resultType.getMutability())
+  if (stringifyRustMutability(getMutability()) != resultType.getMutability())
     return emitOpError("mutability attribute must match reference type");
   return success();
 }
@@ -187,21 +187,16 @@ LogicalResult RawAddressOp::verify() {
   if (pointeeType != resultType.getPointeeType())
     return emitOpError("operand element type must match raw pointer pointee "
                        "type");
-  if (getMutability() != resultType.getMutability())
+  if (stringifyRustMutability(getMutability()) != resultType.getMutability())
     return emitOpError("mutability attribute must match raw pointer type");
   return success();
 }
 
 LogicalResult TypedCallOp::verify() {
-  if (std::optional<StringRef> abi = getAbi()) {
-    if (*abi != "rust" && *abi != "c")
-      return emitOpError("expected abi to be \"rust\" or \"c\"");
-  }
-
   if (auto cVariadic = getCVariadicAttr()) {
     if (cVariadic.getValue()) {
-      std::optional<StringRef> abi = getAbi();
-      if (!abi || *abi != "c")
+      std::optional<RustAbi> abi = getAbi();
+      if (!abi || *abi != RustAbi::C)
         return emitOpError("c_variadic calls must use C ABI");
     }
   }

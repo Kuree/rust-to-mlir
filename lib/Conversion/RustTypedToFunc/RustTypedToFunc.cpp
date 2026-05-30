@@ -44,8 +44,8 @@ SmallVector<Type> getTopLevelReturnTypes(rust::mir::TypedFuncOp typedFunc) {
 }
 
 bool isArgumentSlot(rust::mir::LocalSlotOp op) {
-  if (std::optional<llvm::StringRef> role = op.getRole())
-    return *role == "arg";
+  if (std::optional<rust::mir::RustLocalRole> role = op.getRole())
+    return *role == rust::mir::RustLocalRole::Arg;
   return false;
 }
 

@@ -27,7 +27,6 @@
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
-#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Regex.h"
 #include "llvm/Support/raw_ostream.h"
@@ -187,6 +186,16 @@ void addStringAttr(MLIRContext *context, OperationState &state, StringRef name,
   if (!value.data && value.length == 0)
     return;
   state.addAttribute(name, stringAttr(context, value));
+}
+
+template <typename EnumT, typename AttrT>
+void addEnumAttr(MLIRContext *context, OperationState &state, StringRef name,
+                 MlirStringRef value,
+                 std::optional<EnumT> (*symbolize)(StringRef)) {
+  if (!value.data && value.length == 0)
+    return;
+  if (std::optional<EnumT> symbol = symbolize(unwrap(value)))
+    state.addAttribute(name, AttrT::get(context, *symbol));
 }
 
 NamedAttribute named(Builder &builder, StringRef name, Attribute attr) {
@@ -608,7 +617,8 @@ MlirOperation rustMirRvalueBinaryOpCreate(MlirLocation location,
   MLIRContext *context = unwrap(location).getContext();
   OperationState state(unwrap(location), binaryRvalueOpName(kind));
   addStringAttr(context, state, "mir_kind", kind);
-  addStringAttr(context, state, "op", op);
+  addEnumAttr<rustmir::RustBinaryOpKind, rustmir::RustBinaryOpKindAttr>(
+      context, state, "op", op, rustmir::symbolizeRustBinaryOpKind);
   MlirOperation wrapped = createRegionOperation(state);
   Operation *operation = unwrap(wrapped);
   appendOwnedChild(operation, lhs);
@@ -622,7 +632,8 @@ MlirOperation rustMirRvalueUnaryOpCreate(MlirLocation location,
   MLIRContext *context = unwrap(location).getContext();
   OperationState state(unwrap(location), "rust.mir.unary_op");
   addStringAttr(context, state, "mir_kind", kind);
-  addStringAttr(context, state, "op", op);
+  addEnumAttr<rustmir::RustUnaryOpKind, rustmir::RustUnaryOpKindAttr>(
+      context, state, "op", op, rustmir::symbolizeRustUnaryOpKind);
   MlirOperation wrapped = createRegionOperation(state);
   appendOwnedChild(unwrap(wrapped), operand);
   return wrapped;
@@ -636,7 +647,9 @@ MlirOperation rustMirRvalueAggregateCreate(MlirLocation location,
   MLIRContext *context = unwrap(location).getContext();
   OperationState state(unwrap(location), "rust.mir.aggregate");
   addStringAttr(context, state, "mir_kind", kind);
-  addStringAttr(context, state, "aggregate_kind", aggregateKind);
+  addEnumAttr<rustmir::RustAggregateKind, rustmir::RustAggregateKindAttr>(
+      context, state, "aggregate_kind", aggregateKind,
+      rustmir::symbolizeRustAggregateKind);
   MlirOperation wrapped = createRegionOperation(state);
   appendOwnedChildren(unwrap(wrapped), numOperands, operands);
   return wrapped;
@@ -663,8 +676,12 @@ MlirOperation rustMirRvalueRefCreate(MlirLocation location,
   OperationState state(unwrap(location), "rust.mir.ref");
   state.addAttribute("mir_kind", builder.getStringAttr("Ref"));
   addStringAttr(context, state, "rust_region", rustRegion);
-  addStringAttr(context, state, "borrow_kind", borrowKind);
-  addStringAttr(context, state, "mutability", mutability);
+  addEnumAttr<rustmir::RustBorrowKind, rustmir::RustBorrowKindAttr>(
+      context, state, "borrow_kind", borrowKind,
+      rustmir::symbolizeRustBorrowKind);
+  addEnumAttr<rustmir::RustMutability, rustmir::RustMutabilityAttr>(
+      context, state, "mutability", mutability,
+      rustmir::symbolizeRustMutability);
   addStringAttr(context, state, "debug", debug);
   MlirOperation wrapped = createRegionOperation(state);
   appendOwnedChild(unwrap(wrapped), place);
@@ -680,8 +697,12 @@ MlirOperation rustMirRvalueAddressOfCreate(MlirLocation location,
   Builder builder(context);
   OperationState state(unwrap(location), "rust.mir.address_of");
   state.addAttribute("mir_kind", builder.getStringAttr("AddressOf"));
-  addStringAttr(context, state, "raw_ptr_kind", rawPtrKind);
-  addStringAttr(context, state, "mutability", mutability);
+  addEnumAttr<rustmir::RustRawPtrKind, rustmir::RustRawPtrKindAttr>(
+      context, state, "raw_ptr_kind", rawPtrKind,
+      rustmir::symbolizeRustRawPtrKind);
+  addEnumAttr<rustmir::RustMutability, rustmir::RustMutabilityAttr>(
+      context, state, "mutability", mutability,
+      rustmir::symbolizeRustMutability);
   addStringAttr(context, state, "debug", debug);
   MlirOperation wrapped = createRegionOperation(state);
   appendOwnedChild(unwrap(wrapped), place);
@@ -750,14 +771,17 @@ MlirOperation rustMirCallCreate(
     state.addAttribute("target", builder.getI64IntegerAttr(target));
   state.addAttribute("mir_kind", builder.getStringAttr("Call"));
   addStringAttr(context, state, "debug", debug);
-  addStringAttr(context, state, "unwind", unwind);
+  addEnumAttr<rustmir::RustUnwindAction, rustmir::RustUnwindActionAttr>(
+      context, state, "unwind", unwind,
+      rustmir::symbolizeRustUnwindAction);
   addStringAttr(context, state, "callee_name", calleeName);
   addStringAttr(context, state, "callee_def", calleeDef);
   addStringAttr(context, state, "callee_type", calleeType);
   addStringAttr(context, state, "callee_generic_args", calleeGenericArgs);
   addStringAttr(context, state, "callee_inputs", calleeInputs);
   addStringAttr(context, state, "callee_output", calleeOutput);
-  addStringAttr(context, state, "callee_abi", calleeAbi);
+  addEnumAttr<rustmir::RustAbi, rustmir::RustAbiAttr>(
+      context, state, "callee_abi", calleeAbi, rustmir::symbolizeRustAbi);
   if (calleeAbi.data || calleeAbi.length != 0)
     state.addAttribute("callee_c_variadic",
                        builder.getBoolAttr(calleeCVariadic));
@@ -826,8 +850,12 @@ MlirOperation rustMirLocalCreate(MlirLocation location, int64_t index,
   OperationState state(unwrap(location), kRustMIRLocal);
   state.addAttribute("index", builder.getI64IntegerAttr(index));
   addStringAttr(context, state, "name", name);
-  addStringAttr(context, state, "role", role);
-  addStringAttr(context, state, "mutability", mutability);
+  addEnumAttr<rustmir::RustLocalRole, rustmir::RustLocalRoleAttr>(
+      context, state, "role", role, rustmir::symbolizeRustLocalRole);
+  addEnumAttr<rustmir::RustLocalMutability,
+              rustmir::RustLocalMutabilityAttr>(
+      context, state, "mutability", mutability,
+      rustmir::symbolizeRustLocalMutability);
   state.addAttribute("rust_type", TypeAttr::get(unwrap(rustType)));
   return createOperation(state);
 }

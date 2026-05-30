@@ -9,6 +9,7 @@ add_mlir_dialect_library(RustToLLVMRustMIRDialect
   ${PROJECT_SOURCE_DIR}/include/mlir/Dialect/RustTyped/IR
 
   DEPENDS
+  MLIRRustAttrsIncGen
   MLIRRustMIROpsIncGen
   MLIRRustTypedOpsIncGen
 

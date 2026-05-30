@@ -7,7 +7,7 @@ pub fn mask(a: usize, b: usize) -> usize {
 // CHECK: rust.mir.assign
 // CHECK: rust.mir.place 0
 // CHECK: rust.mir.binary_op
-// CHECK-SAME: op = "BitAnd"
+// CHECK-SAME: op = #rust.binary_op<BitAnd>
 // CHECK: rust.mir.copy
 // CHECK: rust.mir.place 1
 // CHECK: rust.mir.copy

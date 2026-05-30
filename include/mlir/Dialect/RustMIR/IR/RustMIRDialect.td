@@ -20,7 +20,9 @@ def RustMIR_Dialect : Dialect {
   let cppNamespace = "::mlir::rust::mir";
 
   let useDefaultTypePrinterParser = 1;
+  let useDefaultAttributePrinterParser = 1;
   let extraClassDeclaration = [{
+    void registerAttributes();
     void registerTypes();
   }];
 }

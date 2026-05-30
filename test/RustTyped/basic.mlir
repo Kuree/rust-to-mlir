@@ -2,7 +2,7 @@
 
 module {
   rust.typed.func @typed {
-    %slot = rust.typed.local_slot {index = 0 : i64, name = "_0", role = "return"} : <!rust.mir.int<"i32">>
+    %slot = rust.typed.local_slot {index = 0 : i64, name = "_0", role = #rust.local_role<return>} : <!rust.mir.int<"i32">>
     %value = rust.typed.const {debug = "7"} : !rust.mir.int<"i32">
     rust.typed.store %value, %slot : !rust.mir.int<"i32">, <!rust.mir.int<"i32">>
     %loaded = rust.typed.load %slot : <!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
