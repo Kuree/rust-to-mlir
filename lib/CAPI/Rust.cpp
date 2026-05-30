@@ -575,14 +575,13 @@ MlirOperation rustMirMoveCreate(MlirLocation location, MlirOperation place) {
   return wrapped;
 }
 
-MlirOperation createConstantOperation(MlirLocation location,
-                                      std::optional<int64_t> value,
+MlirOperation createConstantOperation(MlirLocation location, Attribute value,
                                       MlirStringRef debug, MlirStringRef type) {
   MLIRContext *context = unwrap(location).getContext();
   Builder builder(context);
   OperationState state(unwrap(location), "rust.mir.constant");
   if (value)
-    state.addAttribute("value", builder.getI64IntegerAttr(*value));
+    state.addAttribute("value", value);
   addStringAttr(context, state, "debug", debug);
   addStringAttr(context, state, "ty", type);
   state.addAttribute("mir_kind", builder.getStringAttr("Constant"));
@@ -592,12 +591,24 @@ MlirOperation createConstantOperation(MlirLocation location,
 MlirOperation rustMirConstantI64Create(MlirLocation location, int64_t value,
                                        MlirStringRef debug,
                                        MlirStringRef type) {
-  return createConstantOperation(location, value, debug, type);
+  Builder builder(unwrap(location).getContext());
+  return createConstantOperation(location, builder.getI64IntegerAttr(value),
+                                 debug, type);
 }
 
 MlirOperation rustMirConstantCreate(MlirLocation location, MlirStringRef debug,
                                     MlirStringRef type) {
-  return createConstantOperation(location, std::nullopt, debug, type);
+  return createConstantOperation(location, Attribute(), debug, type);
+}
+
+MlirOperation rustMirConstantStringCreate(MlirLocation location,
+                                          MlirStringRef value,
+                                          MlirStringRef debug,
+                                          MlirStringRef type) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  return createConstantOperation(location, builder.getStringAttr(unwrap(value)),
+                                 debug, type);
 }
 
 MlirOperation rustMirOperandDebugCreate(MlirLocation location,

@@ -60,6 +60,19 @@ endif()
 message(STATUS "Using Cargo executable: ${RUST_TO_LLVM_CARGO_EXECUTABLE}")
 message(STATUS "Using rustc executable: ${RUST_TO_LLVM_RUSTC_EXECUTABLE}")
 
+execute_process(
+  COMMAND ${RUST_TO_LLVM_RUSTC_EXECUTABLE} --print target-libdir
+  OUTPUT_VARIABLE RUST_TO_LLVM_RUST_TARGET_LIBDIR
+  OUTPUT_STRIP_TRAILING_WHITESPACE
+  RESULT_VARIABLE RUST_TO_LLVM_RUST_TARGET_LIBDIR_RESULT
+)
+if(NOT RUST_TO_LLVM_RUST_TARGET_LIBDIR_RESULT EQUAL 0 OR
+   NOT RUST_TO_LLVM_RUST_TARGET_LIBDIR)
+  message(FATAL_ERROR
+    "Failed to query Rust target libdir from ${RUST_TO_LLVM_RUSTC_EXECUTABLE}")
+endif()
+message(STATUS "Using Rust target libdir: ${RUST_TO_LLVM_RUST_TARGET_LIBDIR}")
+
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})
 include_directories(${RUST_TO_LLVM_SOURCE_DIR}/include)
@@ -69,6 +82,7 @@ add_definitions(${LLVM_DEFINITIONS})
 
 add_subdirectory(include)
 add_subdirectory(lib)
+add_subdirectory(runtime)
 add_subdirectory(tools)
 
 option(RUST_TO_LLVM_INCLUDE_TESTS "Generate RustToLLVM lit test targets" ON)

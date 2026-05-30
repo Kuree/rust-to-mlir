@@ -10,6 +10,7 @@ use rustc_public::mir::{
     AggregateKind, Mutability, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind,
     TerminatorKind,
 };
+use rustc_public::mir::alloc::GlobalAlloc;
 use rustc_public::target::{Endian, MachineInfo};
 use rustc_public::ty::{Abi, ConstantKind, RigidTy, Ty, TyKind};
 use rustc_public::CrateItem;
@@ -124,6 +125,12 @@ type RustMirConstantI64Create =
     unsafe extern "C" fn(MlirLocation, i64, MlirStringRef, MlirStringRef) -> MlirOperation;
 type RustMirConstantCreate =
     unsafe extern "C" fn(MlirLocation, MlirStringRef, MlirStringRef) -> MlirOperation;
+type RustMirConstantStringCreate = unsafe extern "C" fn(
+    MlirLocation,
+    MlirStringRef,
+    MlirStringRef,
+    MlirStringRef,
+) -> MlirOperation;
 type RustMirOperandDebugCreate =
     unsafe extern "C" fn(MlirLocation, MlirStringRef, MlirStringRef) -> MlirOperation;
 type RustMirRvalueBinaryOpCreate = unsafe extern "C" fn(
@@ -258,6 +265,7 @@ struct MlirApi {
     move_create: RustMirMoveCreate,
     constant_i64_create: RustMirConstantI64Create,
     constant_create: RustMirConstantCreate,
+    constant_string_create: RustMirConstantStringCreate,
     operand_debug_create: RustMirOperandDebugCreate,
     rvalue_binary_op_create: RustMirRvalueBinaryOpCreate,
     rvalue_unary_op_create: RustMirRvalueUnaryOpCreate,
@@ -334,6 +342,7 @@ impl MlirApi {
                 move_create: load_symbol(handle, "rustMirMoveCreate")?,
                 constant_i64_create: load_symbol(handle, "rustMirConstantI64Create")?,
                 constant_create: load_symbol(handle, "rustMirConstantCreate")?,
+                constant_string_create: load_symbol(handle, "rustMirConstantStringCreate")?,
                 operand_debug_create: load_symbol(handle, "rustMirOperandDebugCreate")?,
                 rvalue_binary_op_create: load_symbol(handle, "rustMirRvalueBinaryOpCreate")?,
                 rvalue_unary_op_create: load_symbol(handle, "rustMirRvalueUnaryOpCreate")?,
@@ -681,6 +690,7 @@ struct MirConstant {
     ty: String,
     debug: String,
     value: Option<i64>,
+    string: Option<String>,
 }
 
 #[derive(Clone)]
@@ -1032,12 +1042,20 @@ impl MirOperand {
         match operand {
             Operand::Copy(place) => Self::Copy(MirPlace::from_public(place)),
             Operand::Move(place) => Self::Move(MirPlace::from_public(place)),
-            Operand::Constant(constant) => Self::Constant(MirConstant {
-                ty: format!("{:?}", constant.const_.ty()),
-                debug: constant_scalar_text(constant)
-                    .unwrap_or_else(|| format!("{:?}", constant.const_)),
-                value: constant_scalar_text(constant).and_then(|text| text.parse::<i64>().ok()),
-            }),
+            Operand::Constant(constant) => {
+                let scalar = constant_scalar_text(constant);
+                let string = constant_string_text(constant);
+                Self::Constant(MirConstant {
+                    ty: format!("{:?}", constant.const_.ty()),
+                    debug: string
+                        .as_ref()
+                        .or(scalar.as_ref())
+                        .cloned()
+                        .unwrap_or_else(|| format!("{:?}", constant.const_)),
+                    value: scalar.and_then(|text| text.parse::<i64>().ok()),
+                    string,
+                })
+            }
             Operand::RuntimeChecks(checks) => Self::RuntimeChecks {
                 debug: format!("{checks:?}"),
             },
@@ -1555,6 +1573,15 @@ impl MlirEmitter {
                             mlir_string(&constant.ty),
                         )
                     }
+                } else if let Some(value) = &constant.string {
+                    unsafe {
+                        (self.api.constant_string_create)(
+                            self.location(span),
+                            mlir_string(value),
+                            mlir_string(&constant.debug),
+                            mlir_string(&constant.ty),
+                        )
+                    }
                 } else {
                     unsafe {
                         (self.api.constant_create)(
@@ -1776,6 +1803,40 @@ fn constant_scalar_text(constant: &rustc_public::mir::ConstOperand) -> Option<St
     }
 
     None
+}
+
+fn constant_string_text(constant: &rustc_public::mir::ConstOperand) -> Option<String> {
+    let ConstantKind::Allocated(allocation) = constant.const_.kind() else {
+        return None;
+    };
+
+    let ty = format!("{:?}", constant.const_.ty());
+    if !ty.contains("RigidTy(Ref(") || !ty.contains("RigidTy(Str)") {
+        return None;
+    }
+
+    let pointer_width = MachineInfo::target_pointer_width().bytes();
+    let data_offset: usize = allocation
+        .read_partial_uint(0..pointer_width)
+        .ok()?
+        .try_into()
+        .ok()?;
+    let len: usize = allocation
+        .read_partial_uint(pointer_width..(pointer_width * 2))
+        .ok()?
+        .try_into()
+        .ok()?;
+    let data_alloc_id = allocation
+        .provenance
+        .ptrs
+        .iter()
+        .find_map(|(offset, provenance)| (*offset == 0).then_some(provenance.0))?;
+    let GlobalAlloc::Memory(data_alloc) = GlobalAlloc::from(data_alloc_id) else {
+        return None;
+    };
+    let data = data_alloc.raw_bytes().ok()?;
+    let end = data_offset.checked_add(len)?;
+    String::from_utf8(data.get(data_offset..end)?.to_vec()).ok()
 }
 
 fn statement_op_name(kind: &str) -> &'static str {

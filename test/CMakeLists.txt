@@ -11,6 +11,7 @@ configure_lit_site_cfg(
 set(RUST_TO_LLVM_TEST_DEPENDS
   FileCheck
   not
+  rust-cpu-runner
   rust-opt
   rust-mir-extract
 )

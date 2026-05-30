@@ -2,10 +2,10 @@
 // RUN: rust-opt %t.mlirbc --rust-lift-typed-mir | FileCheck %s
 
 // CHECK-LABEL: rust.typed.func @"print_shim::print_sum_typed"
-// CHECK: rust.typed.call @__rust_to_llvm_print_i32(%{{[^)]*}})
+// CHECK: rust.typed.call @__rtl_println_i32(%{{[^)]*}})
 // CHECK-SAME: abi = #rust.abi<c>
 // CHECK-SAME: c_variadic = false
-// CHECK-SAME: rust_name = "print_shim::__rust_to_llvm_print_i32"
+// CHECK-SAME: rust_name = "print_shim::__rtl_println_i32"
 // CHECK-SAME: target = 2 : i64
 // CHECK-SAME: unwind = #rust.unwind<Unreachable>
 // CHECK-SAME: (!rust.mir.int<"i32">) -> ()

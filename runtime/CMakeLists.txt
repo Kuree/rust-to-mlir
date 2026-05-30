@@ -1,0 +1,32 @@
+set(RUST_TO_LLVM_RUNTIME_SOURCE
+  ${CMAKE_CURRENT_SOURCE_DIR}/src/lib.rs)
+set(RUST_TO_LLVM_RUNTIME_OUTPUT
+  ${LLVM_LIBRARY_OUTPUT_INTDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}rust_to_llvm_runtime${CMAKE_SHARED_LIBRARY_SUFFIX})
+
+set(RUST_TO_LLVM_RUNTIME_RUSTC_ARGS
+  --crate-name rust_to_llvm_runtime
+  --edition=2021
+  --crate-type cdylib
+  -C prefer-dynamic
+  -o ${RUST_TO_LLVM_RUNTIME_OUTPUT}
+  ${RUST_TO_LLVM_RUNTIME_SOURCE}
+)
+
+if(UNIX AND NOT APPLE)
+  list(APPEND RUST_TO_LLVM_RUNTIME_RUSTC_ARGS
+    -C "link-arg=-Wl,-rpath,${RUST_TO_LLVM_RUST_TARGET_LIBDIR}")
+endif()
+
+add_custom_command(
+  OUTPUT ${RUST_TO_LLVM_RUNTIME_OUTPUT}
+  COMMAND ${CMAKE_COMMAND} -E make_directory ${LLVM_LIBRARY_OUTPUT_INTDIR}
+  COMMAND ${RUST_TO_LLVM_RUSTC_EXECUTABLE}
+          ${RUST_TO_LLVM_RUNTIME_RUSTC_ARGS}
+  DEPENDS
+    ${RUST_TO_LLVM_RUNTIME_SOURCE}
+    ${PROJECT_SOURCE_DIR}/rust-toolchain.toml
+  COMMENT "Building RustToLLVM runtime shim"
+  VERBATIM)
+
+add_custom_target(rust-to-llvm-runtime
+  DEPENDS ${RUST_TO_LLVM_RUNTIME_OUTPUT})

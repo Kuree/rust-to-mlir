@@ -14,9 +14,13 @@
 #include "mlir/Dialect/RustTyped/IR/RustTypedOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/DialectRegistry.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/STLExtras.h"
+#include "llvm/ADT/SmallVector.h"
+#include "llvm/ADT/StringExtras.h"
+#include "llvm/ADT/Twine.h"
 
 #include <limits>
 
@@ -92,6 +96,133 @@ Value createI64One(OpBuilder &builder, Location loc) {
   return mlir::rust::createOp<LLVM::ConstantOp>(builder, loc,
                                                 builder.getI64Type(), 1)
       .getRes();
+}
+
+bool isRustStrRefType(Type type) {
+  auto refType = dyn_cast<rustmir::TypedRefType>(type);
+  if (!refType)
+    return false;
+  auto pointee = dyn_cast<rustmir::OpaqueType>(refType.getPointeeType());
+  return pointee && pointee.getSpelling().contains("RigidTy(Str)");
+}
+
+StringAttr getStringLiteralAttr(Value value) {
+  auto constOp = value.getDefiningOp<rustmir::TypedConstOp>();
+  if (!constOp || !isRustStrRefType(constOp.getResult().getType()))
+    return {};
+  return dyn_cast_or_null<StringAttr>(constOp.getValueAttr());
+}
+
+bool isStringLiteralConst(rustmir::TypedConstOp op) {
+  return isRustStrRefType(op.getResult().getType()) &&
+         isa_and_nonnull<StringAttr>(op.getValueAttr());
+}
+
+bool hasRustName(Operation *op, StringRef name) {
+  auto attr = op->getAttrOfType<StringAttr>("rust.rust_name");
+  return attr && attr.getValue() == name;
+}
+
+std::string getStringGlobalName(StringRef value) {
+  uint64_t hash = 1469598103934665603ULL;
+  for (unsigned char byte : value.bytes()) {
+    hash ^= byte;
+    hash *= 1099511628211ULL;
+  }
+  return ("__rtl_str_" + Twine(value.size()) + "_" + llvm::utohexstr(hash))
+      .str();
+}
+
+LLVM::GlobalOp getOrCreateStringGlobal(ModuleOp module, Location loc,
+                                       StringRef value, OpBuilder &builder) {
+  std::string name = getStringGlobalName(value);
+  if (auto global = dyn_cast_or_null<LLVM::GlobalOp>(
+          SymbolTable::lookupSymbolIn(module, name)))
+    return global;
+
+  OpBuilder::InsertionGuard guard(builder);
+  builder.setInsertionPointToStart(module.getBody());
+  auto arrayType = LLVM::LLVMArrayType::get(builder.getContext(),
+                                            builder.getI8Type(), value.size());
+  return mlir::rust::createOp<LLVM::GlobalOp>(
+      builder, loc, arrayType, /*isConstant=*/true, LLVM::Linkage::Private,
+      name, builder.getStringAttr(value));
+}
+
+bool isStrAsPtrCall(func::CallOp op) {
+  return hasRustName(op, "core::str::<impl str>::as_ptr") &&
+         op.getNumOperands() == 1 && op.getNumResults() == 1;
+}
+
+bool isStrLenCall(func::CallOp op) {
+  return hasRustName(op, "core::str::<impl str>::len") &&
+         op.getNumOperands() == 1 && op.getNumResults() == 1;
+}
+
+void foldStringLiteralCalls(ModuleOp module) {
+  MLIRContext *context = module.getContext();
+  OpBuilder builder(context);
+  SmallVector<func::CallOp> calls;
+  module.walk([&](func::CallOp op) {
+    if (isStrAsPtrCall(op) || isStrLenCall(op))
+      calls.push_back(op);
+  });
+
+  for (func::CallOp op : calls) {
+    StringAttr valueAttr = getStringLiteralAttr(op.getOperand(0));
+    if (!valueAttr)
+      continue;
+
+    builder.setInsertionPoint(op);
+    if (isStrAsPtrCall(op)) {
+      LLVM::GlobalOp global =
+          getOrCreateStringGlobal(module, op.getLoc(), valueAttr.getValue(),
+                                  builder);
+      Value address = mlir::rust::createOp<LLVM::AddressOfOp>(
+                          builder, op.getLoc(),
+                          LLVM::LLVMPointerType::get(context),
+                          global.getSymName())
+                          .getRes();
+      op.getResult(0).replaceAllUsesWith(address);
+      op.erase();
+      continue;
+    }
+
+    auto intType = dyn_cast<IntegerType>(op.getResult(0).getType());
+    if (!intType)
+      continue;
+
+    Value len = mlir::rust::createOp<LLVM::ConstantOp>(
+                    builder, op.getLoc(), intType,
+                    IntegerAttr::get(intType, valueAttr.getValue().size()))
+                    .getRes();
+    op.getResult(0).replaceAllUsesWith(len);
+    op.erase();
+  }
+
+  bool hasRemainingStringHelperCall = false;
+  module.walk([&](func::CallOp op) {
+    hasRemainingStringHelperCall |= isStrAsPtrCall(op) || isStrLenCall(op);
+  });
+  if (!hasRemainingStringHelperCall) {
+    SmallVector<func::FuncOp> unusedStringHelpers;
+    module.walk([&](func::FuncOp op) {
+      if (op.isDeclaration() &&
+          (hasRustName(op.getOperation(), "core::str::<impl str>::as_ptr") ||
+           hasRustName(op.getOperation(), "core::str::<impl str>::len")))
+        unusedStringHelpers.push_back(op);
+    });
+    for (func::FuncOp op : unusedStringHelpers)
+      op.erase();
+  }
+
+  SmallVector<rustmir::TypedConstOp> stringConstants;
+  module.walk([&](rustmir::TypedConstOp op) {
+    if (isStringLiteralConst(op) && op->use_empty())
+      stringConstants.push_back(op);
+  });
+  for (rustmir::TypedConstOp op : stringConstants)
+    op.erase();
 }
 
 struct LocalSlotOpConversion
@@ -212,6 +343,8 @@ struct ConvertRustTypedMemoryToLLVMPass
     MLIRContext *context = module.getContext();
     RustTypedMemoryTypeConverter typeConverter(context);
 
+    foldStringLiteralCalls(module);
+
     ConversionTarget target(*context);
     target.addLegalDialect<func::FuncDialect, LLVM::LLVMDialect,
                            rustmir::RustMIRDialect>();
@@ -231,6 +364,8 @@ struct ConvertRustTypedMemoryToLLVMPass
     target.addDynamicallyLegalOp<func::ReturnOp>([&](func::ReturnOp op) {
       return !hasTypeConversion(op.getOperandTypes(), typeConverter);
     });
+    target.addDynamicallyLegalOp<rustmir::TypedConstOp>(
+        [](rustmir::TypedConstOp op) { return !isStringLiteralConst(op); });
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
     RewritePatternSet patterns(context);

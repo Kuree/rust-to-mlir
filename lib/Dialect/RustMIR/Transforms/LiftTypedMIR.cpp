@@ -150,7 +150,8 @@ bool isCAbiCall(rust::mir::CallOp call) {
   if (std::optional<rust::mir::RustAbi> abi = call.getCalleeAbi())
     return *abi == rust::mir::RustAbi::C;
   if (std::optional<std::string> rustName = extractCallRustName(call))
-    return StringRef(*rustName).contains("__rust_to_llvm_");
+    return StringRef(*rustName).starts_with("__rtl_") ||
+           StringRef(*rustName).contains("::__rtl_");
   return false;
 }
 

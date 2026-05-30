@@ -28,7 +28,7 @@ if not loaded_site_config:
 
     config.rust_to_llvm_tools_dir = os.path.join(config.rust_to_llvm_obj_root, "bin")
     tool_dirs = [config.rust_to_llvm_tools_dir, config.llvm_tools_dir]
-    tools = ["rust-opt", "FileCheck", "not"]
+    tools = ["rust-opt", "rust-cpu-runner", "FileCheck", "not"]
     llvm_config.add_tool_substitutions(tools, tool_dirs)
 
     rust_mir_extract = os.path.join(config.rust_to_llvm_tools_dir, "rust-mir-extract")

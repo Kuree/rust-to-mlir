@@ -97,6 +97,9 @@ MLIR_CAPI_EXPORTED MlirOperation rustMirConstantI64Create(
 MLIR_CAPI_EXPORTED MlirOperation rustMirConstantCreate(MlirLocation location,
                                                        MlirStringRef debug,
                                                        MlirStringRef type);
+MLIR_CAPI_EXPORTED MlirOperation rustMirConstantStringCreate(
+    MlirLocation location, MlirStringRef value, MlirStringRef debug,
+    MlirStringRef type);
 MLIR_CAPI_EXPORTED MlirOperation rustMirOperandDebugCreate(
     MlirLocation location, MlirStringRef kind, MlirStringRef debug);
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueBinaryOpCreate(
