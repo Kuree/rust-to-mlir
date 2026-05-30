@@ -4,6 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
+#include "mlir/Conversion/RustTypedMemoryToLLVM/RustTypedMemoryToLLVM.h"
 #include "mlir/Conversion/RustTypedToArith/RustTypedToArith.h"
 #include "mlir/Conversion/RustTypedToControlFlow/RustTypedToControlFlow.h"
 #include "mlir/Conversion/RustTypedToFunc/RustTypedToFunc.h"
@@ -28,6 +29,7 @@ int main(int argc, char **argv) {
   mlir::registerConvertRustTypedToArithPass();
   mlir::registerConvertRustTypedToControlFlowPass();
   mlir::registerConvertRustTypedToFuncPass();
+  mlir::registerConvertRustTypedMemoryToLLVMPass();
   mlir::rust::registerRustMIRPasses();
   mlir::registerMem2Reg();
   mlir::registerSROA();

@@ -1,3 +1,4 @@
 add_subdirectory(RustTypedToArith)
 add_subdirectory(RustTypedToControlFlow)
 add_subdirectory(RustTypedToFunc)
+add_subdirectory(RustTypedMemoryToLLVM)

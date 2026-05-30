@@ -39,7 +39,8 @@ def RustTyped_LocalSlotOp : RustTyped_Op<"local_slot",
                        OptionalAttr<StrAttr>:$name,
                        OptionalAttr<StrAttr>:$mutability,
                        OptionalAttr<StrAttr>:$role,
-                       OptionalAttr<StrAttr>:$span);
+                       OptionalAttr<StrAttr>:$span,
+                       OptionalAttr<BoolAttr>:$address_taken);
   let results = (outs RustTyped_SlotType:$slot);
   let assemblyFormat = "attr-dict `:` type($slot)";
 }

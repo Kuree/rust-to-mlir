@@ -32,6 +32,12 @@ bool isArgumentSlot(LocalSlotOp op) {
   return false;
 }
 
+bool isAddressTaken(LocalSlotOp op) {
+  if (BoolAttr attr = op.getAddressTakenAttr())
+    return attr.getValue();
+  return false;
+}
+
 std::optional<int64_t> getConstantIndex(Attribute attr) {
   auto integerAttr = dyn_cast<IntegerAttr>(attr);
   if (!integerAttr)
@@ -146,7 +152,7 @@ LogicalResult TypedCallOp::verify() {
 }
 
 llvm::SmallVector<MemorySlot> LocalSlotOp::getPromotableSlots() {
-  if (isArgumentSlot(*this))
+  if (isArgumentSlot(*this) || isAddressTaken(*this))
     return {};
 
   SlotType slotType = getSlot().getType();
@@ -180,7 +186,7 @@ LocalSlotOp::handlePromotionComplete(const MemorySlot &slot, Value defaultValue,
 
 llvm::SmallVector<DestructurableMemorySlot>
 LocalSlotOp::getDestructurableSlots() {
-  if (isArgumentSlot(*this))
+  if (isArgumentSlot(*this) || isAddressTaken(*this))
     return {};
 
   SlotType slotType = getSlot().getType();
@@ -221,7 +227,7 @@ llvm::DenseMap<Attribute, MemorySlot> LocalSlotOp::destructure(
     auto subslotOp = mlir::rust::createOp<LocalSlotOp>(
         builder, getLoc(), SlotType::get(getContext(), elementType),
         getIndexAttr(), subslotName, getMutabilityAttr(), getRoleAttr(),
-        getSpanAttr());
+        getSpanAttr(), BoolAttr());
     subslots[index] = MemorySlot{subslotOp.getSlot(), elementType};
     if (isDestructurableAggregate(elementType))
       if (auto allocator = dyn_cast<DestructurableAllocationOpInterface>(

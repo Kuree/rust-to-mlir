@@ -13,6 +13,7 @@ target_link_libraries(rust-opt
   RustToLLVMRustTypedToArith
   RustToLLVMRustTypedToControlFlow
   RustToLLVMRustTypedToFunc
+  RustToLLVMRustTypedMemoryToLLVM
   MLIRArithDialect
   MLIRControlFlowDialect
   MLIRDLTIDialect

@@ -108,6 +108,20 @@ public:
       return LLVM::LLVMArrayType::get(this->context, elementType,
                                       type.getLength());
     });
+    addConversion([this](rustmir::TypedRefType type) -> Type {
+      Type pointeeType = convertType(type.getPointeeType());
+      if (!pointeeType)
+        return Type();
+      return rustmir::TypedRefType::get(this->context, type.getMutability(),
+                                        pointeeType);
+    });
+    addConversion([this](rustmir::TypedRawPtrType type) -> Type {
+      Type pointeeType = convertType(type.getPointeeType());
+      if (!pointeeType)
+        return Type();
+      return rustmir::TypedRawPtrType::get(this->context, type.getMutability(),
+                                           pointeeType);
+    });
   }
 
 private:
@@ -610,7 +624,8 @@ struct LocalSlotConversion : public OpConversionPattern<rustmir::LocalSlotOp> {
 
     auto newOp = mlir::rust::createOp<rustmir::LocalSlotOp>(
         rewriter, op.getLoc(), slotType, op.getIndexAttr(), op.getNameAttr(),
-        op.getMutabilityAttr(), op.getRoleAttr(), op.getSpanAttr());
+        op.getMutabilityAttr(), op.getRoleAttr(), op.getSpanAttr(),
+        op.getAddressTakenAttr());
     rewriter.replaceOp(op, newOp.getSlot());
     return success();
   }
@@ -641,6 +656,42 @@ struct StoreConversion : public OpConversionPattern<rustmir::StoreOp> {
     mlir::rust::createOp<rustmir::StoreOp>(
         rewriter, op.getLoc(), adaptor.getValue(), adaptor.getSlot());
     rewriter.eraseOp(op);
+    return success();
+  }
+};
+
+struct BorrowOpConversion : public OpConversionPattern<rustmir::BorrowOp> {
+  using OpConversionPattern<rustmir::BorrowOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::BorrowOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return failure();
+    auto newOp = mlir::rust::createOp<rustmir::BorrowOp>(
+        rewriter, op.getLoc(), resultType, adaptor.getSlot(),
+        op.getBorrowKindAttr(), op.getMutabilityAttr(), op.getRustRegionAttr(),
+        op.getSpanAttr());
+    rewriter.replaceOp(op, newOp.getResult());
+    return success();
+  }
+};
+
+struct RawAddressOpConversion
+    : public OpConversionPattern<rustmir::RawAddressOp> {
+  using OpConversionPattern<rustmir::RawAddressOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::RawAddressOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return failure();
+    auto newOp = mlir::rust::createOp<rustmir::RawAddressOp>(
+        rewriter, op.getLoc(), resultType, adaptor.getSlot(),
+        op.getRawPtrKindAttr(), op.getMutabilityAttr(), op.getSpanAttr());
+    rewriter.replaceOp(op, newOp.getResult());
     return success();
   }
 };
@@ -847,6 +898,15 @@ struct ConvertRustTypedToArithPass
       return !needsTypeConversion(op.getValue().getType(), typeConverter) &&
              !needsTypeConversion(op.getSlot().getType(), typeConverter);
     });
+    target.addDynamicallyLegalOp<rustmir::BorrowOp>([&](rustmir::BorrowOp op) {
+      return !needsTypeConversion(op.getSlot().getType(), typeConverter) &&
+             !needsTypeConversion(op.getResult().getType(), typeConverter);
+    });
+    target.addDynamicallyLegalOp<rustmir::RawAddressOp>(
+        [&](rustmir::RawAddressOp op) {
+          return !needsTypeConversion(op.getSlot().getType(), typeConverter) &&
+                 !needsTypeConversion(op.getResult().getType(), typeConverter);
+        });
     target.addDynamicallyLegalOp<rustmir::MakeAggregateOp>(
         [&](rustmir::MakeAggregateOp op) {
           return !isLowerableMakeAggregate(op, typeConverter);
@@ -912,9 +972,10 @@ struct ConvertRustTypedToArithPass
                             arith::CmpIPredicate::uge>,
         CheckedAddOpConversion, CheckedSubOpConversion, CheckedMulOpConversion,
         NegOpConversion, NotOpConversion, LocalSlotConversion, LoadConversion,
-        StoreConversion, MakeAggregateConversion, FieldConversion,
-        TypedReturnConversion, TypedSwitchIntConversion, TypedAssertConversion,
-        TypedCallConversion>(typeConverter, context);
+        StoreConversion, BorrowOpConversion, RawAddressOpConversion,
+        MakeAggregateConversion, FieldConversion, TypedReturnConversion,
+        TypedSwitchIntConversion, TypedAssertConversion, TypedCallConversion>(
+        typeConverter, context);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
   }

@@ -23,6 +23,7 @@
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/ADT/StringSet.h"
 
 #include <iterator>
 #include <optional>
@@ -179,6 +180,29 @@ std::optional<std::string> getPlaceLocalName(rust::mir::PlaceOp place) {
 
 bool hasProjection(rust::mir::PlaceOp place) {
   return place && !place.getBody().empty() && !place.getBody().front().empty();
+}
+
+void markAddressTakenPlace(Operation *op, llvm::StringSet<> &locals) {
+  auto place = dyn_cast_or_null<rust::mir::PlaceOp>(op);
+  if (!place)
+    return;
+
+  if (std::optional<std::string> localName = getPlaceLocalName(place))
+    locals.insert(*localName);
+}
+
+llvm::StringSet<> collectAddressTakenLocals(rust::mir::FuncOp func) {
+  llvm::StringSet<> locals;
+  func.walk([&](rust::mir::AssignOp assign) {
+    Operation *rvalue = childAt(assign, 1);
+    if (auto ref = dyn_cast_or_null<rust::mir::RefOp>(rvalue)) {
+      markAddressTakenPlace(childAt(ref, 0), locals);
+      return;
+    }
+    if (auto addressOf = dyn_cast_or_null<rust::mir::AddressOfOp>(rvalue))
+      markAddressTakenPlace(childAt(addressOf, 0), locals);
+  });
+  return locals;
 }
 
 LocalSlot *lookupSlot(llvm::StringMap<LocalSlot> &slots, StringRef name) {
@@ -875,6 +899,7 @@ struct LiftTypedMIRPass
       typedBody.push_back(new Block());
       builder.setInsertionPointToEnd(&typedBody.front());
 
+      llvm::StringSet<> addressTakenLocals = collectAddressTakenLocals(func);
       llvm::StringMap<LocalSlot> slots;
       Region &mirBody = func.getBody();
       for (Operation &child : mirBody.front()) {
@@ -893,10 +918,15 @@ struct LiftTypedMIRPass
         if (!index)
           continue;
 
+        BoolAttr addressTakenAttr;
+        if (auto nameAttr = local.getNameAttr())
+          if (addressTakenLocals.contains(nameAttr.getValue()))
+            addressTakenAttr = builder.getBoolAttr(true);
+
         auto slotOp = mlir::rust::createOp<rust::mir::LocalSlotOp>(
             builder, child.getLoc(), slotType, index, local.getNameAttr(),
-            local.getMutabilityAttr(), local.getRoleAttr(),
-            local.getSpanAttr());
+            local.getMutabilityAttr(), local.getRoleAttr(), local.getSpanAttr(),
+            addressTakenAttr);
 
         auto nameAttr = local.getNameAttr();
         if (nameAttr)
