@@ -12,6 +12,7 @@
 namespace mlir::rust::typed {
 using SlotType = ::mlir::rust::mir::SlotType;
 using TupleType = ::mlir::rust::mir::TypedTupleType;
+using ArrayType = ::mlir::rust::mir::TypedArrayType;
 } // namespace mlir::rust::typed
 
 #endif // MLIR_DIALECT_RUST_TYPED_IR_RUSTTYPEDTYPES_H

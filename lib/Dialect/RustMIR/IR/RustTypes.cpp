@@ -41,6 +41,33 @@ Type TypedTupleType::getTypeAtIndex(Attribute index) const {
   return elementTypes[value];
 }
 
+std::optional<llvm::DenseMap<Attribute, Type>>
+TypedArrayType::getSubelementIndexMap() const {
+  constexpr uint64_t kMaxDestructurableArrayLength = 1024;
+  uint64_t length = getLength();
+  if (length > kMaxDestructurableArrayLength)
+    return std::nullopt;
+
+  llvm::DenseMap<Attribute, Type> subelements;
+  MLIRContext *context = getContext();
+  Type indexType = IntegerType::get(context, 64);
+  Type elementType = getElementType();
+  for (uint64_t index = 0; index < length; ++index)
+    subelements[IntegerAttr::get(indexType, static_cast<int64_t>(index))] =
+        elementType;
+  return subelements;
+}
+
+Type TypedArrayType::getTypeAtIndex(Attribute index) const {
+  auto integerIndex = llvm::dyn_cast<IntegerAttr>(index);
+  if (!integerIndex)
+    return {};
+  int64_t value = integerIndex.getInt();
+  if (value < 0 || static_cast<uint64_t>(value) >= getLength())
+    return {};
+  return getElementType();
+}
+
 void RustMIRDialect::registerTypes() {
   addTypes<
 #define GET_TYPEDEF_LIST

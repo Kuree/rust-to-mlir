@@ -101,6 +101,13 @@ public:
       }
       return LLVM::LLVMStructType::getLiteral(this->context, elementTypes);
     });
+    addConversion([this](rustmir::TypedArrayType type) -> Type {
+      Type elementType = convertType(type.getElementType());
+      if (!elementType)
+        return Type();
+      return LLVM::LLVMArrayType::get(this->context, elementType,
+                                      type.getLength());
+    });
   }
 
 private:
@@ -147,20 +154,26 @@ bool isLowerableUnaryOp(OpT op, const TypeConverter &converter) {
          isIntegerLikeAfterConversion(op.getResult().getType(), converter);
 }
 
-bool isLowerableMakeTuple(rustmir::MakeTupleOp op,
-                          const TypeConverter &converter) {
+bool isLowerableMakeAggregate(rustmir::MakeAggregateOp op,
+                              const TypeConverter &converter) {
   Type converted = converter.convertType(op.getResult().getType());
-  auto structType = dyn_cast_or_null<LLVM::LLVMStructType>(converted);
-  return structType && structType.getBody().size() == op.getValues().size();
+  if (auto structType = dyn_cast_or_null<LLVM::LLVMStructType>(converted))
+    return structType.getBody().size() == op.getValues().size();
+  if (auto arrayType = dyn_cast_or_null<LLVM::LLVMArrayType>(converted))
+    return arrayType.getNumElements() == op.getValues().size();
+  return false;
 }
 
 bool isLowerableField(rustmir::FieldOp op, const TypeConverter &converter) {
   Type aggregateType = converter.convertType(op.getAggregate().getType());
-  auto structType = dyn_cast_or_null<LLVM::LLVMStructType>(aggregateType);
-  if (!structType)
-    return false;
   int64_t index = static_cast<int64_t>(op.getIndex());
-  return index >= 0 && static_cast<size_t>(index) < structType.getBody().size();
+  if (auto structType = dyn_cast_or_null<LLVM::LLVMStructType>(aggregateType))
+    return index >= 0 &&
+           static_cast<size_t>(index) < structType.getBody().size();
+  if (auto arrayType = dyn_cast_or_null<LLVM::LLVMArrayType>(aggregateType))
+    return index >= 0 &&
+           static_cast<uint64_t>(index) < arrayType.getNumElements();
+  return false;
 }
 
 std::optional<llvm::APInt> parseIntegerLiteral(StringRef text, unsigned width) {
@@ -632,19 +645,20 @@ struct StoreConversion : public OpConversionPattern<rustmir::StoreOp> {
   }
 };
 
-struct MakeTupleConversion : public OpConversionPattern<rustmir::MakeTupleOp> {
-  using OpConversionPattern<rustmir::MakeTupleOp>::OpConversionPattern;
+struct MakeAggregateConversion
+    : public OpConversionPattern<rustmir::MakeAggregateOp> {
+  using OpConversionPattern<rustmir::MakeAggregateOp>::OpConversionPattern;
 
   LogicalResult
-  matchAndRewrite(rustmir::MakeTupleOp op, OpAdaptor adaptor,
+  matchAndRewrite(rustmir::MakeAggregateOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
     Type resultType = getTypeConverter()->convertType(op.getResult().getType());
-    auto structType = dyn_cast_or_null<LLVM::LLVMStructType>(resultType);
-    if (!structType)
+    if (!resultType || (!isa<LLVM::LLVMStructType>(resultType) &&
+                        !isa<LLVM::LLVMArrayType>(resultType)))
       return failure();
 
     Value aggregate =
-        mlir::rust::createOp<LLVM::UndefOp>(rewriter, op.getLoc(), structType)
+        mlir::rust::createOp<LLVM::UndefOp>(rewriter, op.getLoc(), resultType)
             .getRes();
     for (auto [index, value] : llvm::enumerate(adaptor.getValues())) {
       int64_t position = static_cast<int64_t>(index);
@@ -833,9 +847,9 @@ struct ConvertRustTypedToArithPass
       return !needsTypeConversion(op.getValue().getType(), typeConverter) &&
              !needsTypeConversion(op.getSlot().getType(), typeConverter);
     });
-    target.addDynamicallyLegalOp<rustmir::MakeTupleOp>(
-        [&](rustmir::MakeTupleOp op) {
-          return !isLowerableMakeTuple(op, typeConverter);
+    target.addDynamicallyLegalOp<rustmir::MakeAggregateOp>(
+        [&](rustmir::MakeAggregateOp op) {
+          return !isLowerableMakeAggregate(op, typeConverter);
         });
     target.addDynamicallyLegalOp<rustmir::FieldOp>([&](rustmir::FieldOp op) {
       return !isLowerableField(op, typeConverter);
@@ -898,7 +912,7 @@ struct ConvertRustTypedToArithPass
                             arith::CmpIPredicate::uge>,
         CheckedAddOpConversion, CheckedSubOpConversion, CheckedMulOpConversion,
         NegOpConversion, NotOpConversion, LocalSlotConversion, LoadConversion,
-        StoreConversion, MakeTupleConversion, FieldConversion,
+        StoreConversion, MakeAggregateConversion, FieldConversion,
         TypedReturnConversion, TypedSwitchIntConversion, TypedAssertConversion,
         TypedCallConversion>(typeConverter, context);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))

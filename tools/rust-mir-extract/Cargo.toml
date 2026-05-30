@@ -5,7 +5,10 @@ edition = "2021"
 publish = false
 build = "build.rs"
 
+[lib]
+name = "rust_mir_extract"
+path = "src/lib.rs"
+
 [[bin]]
 name = "rust-mir-extract"
 path = "src/main.rs"
-

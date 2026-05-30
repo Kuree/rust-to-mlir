@@ -69,7 +69,7 @@ getSortedIndices(const llvm::DenseMap<Attribute, MemorySlot> &map) {
   return indices;
 }
 
-bool isDestructurableTuple(Type type) {
+bool isDestructurableAggregate(Type type) {
   auto destructurable = dyn_cast<DestructurableTypeInterface>(type);
   return destructurable && destructurable.getSubelementIndexMap().has_value();
 }
@@ -197,7 +197,7 @@ llvm::DenseMap<Attribute, MemorySlot> LocalSlotOp::destructure(
         getIndexAttr(), subslotName, getMutabilityAttr(), getRoleAttr(),
         getSpanAttr());
     subslots[index] = MemorySlot{subslotOp.getSlot(), elementType};
-    if (isDestructurableTuple(elementType))
+    if (isDestructurableAggregate(elementType))
       if (auto allocator = dyn_cast<DestructurableAllocationOpInterface>(
               subslotOp.getOperation()))
         newAllocators.push_back(allocator);
@@ -262,10 +262,10 @@ DeletionKind LoadOp::rewire(const DestructurableMemorySlot &slot,
     values.push_back(
         createTypedLoad(getLoc(), builder, subslots.lookup(index)));
 
-  Value aggregate =
-      mlir::rust::createOp<MakeTupleOp>(builder, getLoc(), getValue().getType(),
-                                        values, StringAttr())
-          .getResult();
+  Value aggregate = mlir::rust::createOp<MakeAggregateOp>(builder, getLoc(),
+                                                          getValue().getType(),
+                                                          values, StringAttr())
+                        .getResult();
   getValue().replaceAllUsesWith(aggregate);
   return DeletionKind::Delete;
 }

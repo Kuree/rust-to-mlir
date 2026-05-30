@@ -183,6 +183,14 @@ LocalSlot *lookupSlot(llvm::StringMap<LocalSlot> &slots, StringRef name) {
   return &it->second;
 }
 
+Type getIndexedElementType(Type aggregateType, Attribute index) {
+  if (auto tupleType = dyn_cast<rust::mir::TypedTupleType>(aggregateType))
+    return tupleType.getTypeAtIndex(index);
+  if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(aggregateType))
+    return arrayType.getTypeAtIndex(index);
+  return {};
+}
+
 Value createLoad(OpBuilder &builder, Location loc, LocalSlot &slot) {
   return mlir::rust::createOp<rust::mir::LoadOp>(builder, loc, slot.elementType,
                                                  slot.slot)
@@ -213,12 +221,11 @@ std::optional<Type> inferPlaceType(rust::mir::PlaceOp place,
     if (!field)
       return std::nullopt;
 
-    auto tupleType = dyn_cast<rust::mir::TypedTupleType>(type);
     auto indexAttr = field.getIndexAttr();
-    if (!tupleType || !indexAttr)
+    if (!indexAttr)
       return std::nullopt;
 
-    type = tupleType.getTypeAtIndex(indexAttr);
+    type = getIndexedElementType(type, indexAttr);
     if (!type)
       return std::nullopt;
   }
@@ -270,10 +277,8 @@ std::optional<Value> materializePlaceRead(rust::mir::PlaceOp place,
     if (!field)
       return std::nullopt;
 
-    Type resultType;
-    if (auto tupleType = dyn_cast<rust::mir::TypedTupleType>(value.getType())) {
-      resultType = tupleType.getTypeAtIndex(field.getIndexAttr());
-    }
+    Type resultType =
+        getIndexedElementType(value.getType(), field.getIndexAttr());
 
     bool isLastProjection =
         indexedProjection.index() + 1 == projectionBlock.getOperations().size();
@@ -502,7 +507,7 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
                << op.getValue();
       }
 
-      Value tuple = mlir::rust::createOp<rust::mir::MakeTupleOp>(
+      Value tuple = mlir::rust::createOp<rust::mir::MakeAggregateOp>(
                         builder, loc, dest->elementType,
                         ValueRange{value, overflow}, spanAttr)
                         .getResult();
@@ -545,34 +550,49 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
   }
 
   if (auto aggregate = dyn_cast<rust::mir::AggregateOp>(rvalue)) {
-    if (aggregate.getAggregateKind() != "Tuple" || aggregate.getBody().empty())
-      return assign.emitError("only tuple aggregate rvalues can be lifted");
+    StringRef aggregateKind = aggregate.getAggregateKind();
+    if ((aggregateKind != "Tuple" && aggregateKind != "Array") ||
+        aggregate.getBody().empty())
+      return assign.emitError("only tuple and array aggregate rvalues can be "
+                              "lifted");
 
     auto tupleType = dyn_cast<rust::mir::TypedTupleType>(dest->elementType);
+    auto arrayType = dyn_cast<rust::mir::TypedArrayType>(dest->elementType);
+    if (aggregateKind == "Tuple" && !tupleType)
+      return assign.emitError("tuple aggregate destination is not a tuple");
+    if (aggregateKind == "Array" && !arrayType)
+      return assign.emitError("array aggregate destination is not an array");
+
     SmallVector<Value> operands;
     Block &operandBlock = aggregate.getBody().front();
     operands.reserve(operandBlock.getOperations().size());
+    if (arrayType &&
+        operandBlock.getOperations().size() != arrayType.getLength())
+      return assign.emitError("array aggregate operand count does not match "
+                              "array length");
+
     for (auto indexedOperand : llvm::enumerate(operandBlock)) {
       Operation *operandOp = &indexedOperand.value();
       Type expectedType;
       if (tupleType)
         expectedType = tupleType.getTypeAtIndex(
             builder.getI64IntegerAttr(indexedOperand.index()));
+      if (arrayType)
+        expectedType = arrayType.getElementType();
       if (!expectedType)
         expectedType = inferOperandType(operandOp, slots).value_or(Type());
       if (!expectedType)
-        return assign.emitError("failed to infer tuple aggregate operand type");
+        return assign.emitError("failed to infer aggregate operand type");
 
       std::optional<Value> operand =
           materializeOperand(operandOp, builder, assign.getLoc(), slots,
                              expectedType, assign.getSpanAttr());
       if (!operand)
-        return assign.emitError(
-            "failed to materialize tuple aggregate operand");
+        return assign.emitError("failed to materialize aggregate operand");
       operands.push_back(*operand);
     }
 
-    Value result = mlir::rust::createOp<rust::mir::MakeTupleOp>(
+    Value result = mlir::rust::createOp<rust::mir::MakeAggregateOp>(
                        builder, assign.getLoc(), dest->elementType, operands,
                        assign.getSpanAttr())
                        .getResult();

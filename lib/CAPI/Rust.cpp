@@ -438,6 +438,12 @@ MlirType rustTypedTupleTypeGet(MlirContext context, intptr_t numElementTypes,
   return wrap(rustmir::TypedTupleType::get(ctx, ArrayRef<Type>(types)));
 }
 
+MlirType rustTypedArrayTypeGet(MlirContext context, MlirType elementType,
+                               uint64_t length) {
+  return wrap(rustmir::TypedArrayType::get(unwrap(context), unwrap(elementType),
+                                           length));
+}
+
 MlirAttribute rustMirSwitchTargetsAttrGet(MlirContext context,
                                           int64_t otherwise,
                                           intptr_t numBranches,

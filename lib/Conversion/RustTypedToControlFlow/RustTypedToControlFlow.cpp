@@ -79,16 +79,19 @@ void addRustCallAttrs(rust::mir::TypedCallOp from, Operation *to) {
     to->setAttr("rust.abi", attr);
   if (auto attr = from.getSpanAttr())
     to->setAttr("rust.span", attr);
+  // Transitional rustc debug/provenance strings. They are intentionally kept
+  // out of the semantic rust.* call attrs until call identity and ABI metadata
+  // are represented structurally.
   if (auto attr = from.getCalleeDefAttr())
-    to->setAttr("rust.callee_def", attr);
+    to->setAttr("rust.rustc_debug.callee_def", attr);
   if (auto attr = from.getCalleeTypeAttr())
-    to->setAttr("rust.callee_type", attr);
+    to->setAttr("rust.rustc_debug.callee_type", attr);
   if (auto attr = from.getCalleeGenericArgsAttr())
-    to->setAttr("rust.callee_generic_args", attr);
+    to->setAttr("rust.rustc_debug.callee_generic_args", attr);
   if (auto attr = from.getCalleeInputsAttr())
-    to->setAttr("rust.callee_inputs", attr);
+    to->setAttr("rust.rustc_debug.callee_inputs", attr);
   if (auto attr = from.getCalleeOutputAttr())
-    to->setAttr("rust.callee_output", attr);
+    to->setAttr("rust.rustc_debug.callee_output", attr);
   if (auto attr = from.getUnwindAttr())
     to->setAttr("rust.unwind", attr);
   if (auto attr = from.getTargetAttr())

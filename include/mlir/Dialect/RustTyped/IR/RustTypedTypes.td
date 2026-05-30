@@ -36,4 +36,11 @@ def RustTyped_TupleType : RustTyped_Type<"TypedTuple", "tuple",
   ];
 }
 
+def RustTyped_ArrayType : RustTyped_Type<"TypedArray", "array",
+    [DeclareTypeInterfaceMethods<DestructurableTypeInterface>]> {
+  let summary = "Typed Rust fixed-size array";
+  let parameters = (ins "Type":$elementType, "uint64_t":$length);
+  let assemblyFormat = "`<` $elementType `,` $length `>`";
+}
+
 #endif // MLIR_DIALECT_RUST_TYPED_IR_RUSTTYPEDTYPES_TD

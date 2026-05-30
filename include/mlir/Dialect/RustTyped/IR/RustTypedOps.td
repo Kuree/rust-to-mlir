@@ -136,8 +136,8 @@ class RustTyped_UnaryOp<string mnemonic, string opSummary>
 def RustTyped_NegOp : RustTyped_UnaryOp<"neg", "Typed Rust MIR negation">;
 def RustTyped_NotOp : RustTyped_UnaryOp<"not", "Typed Rust MIR bitwise not">;
 
-def RustTyped_MakeTupleOp : RustTyped_Op<"aggregate"> {
-  let summary = "Build a typed Rust tuple aggregate";
+def RustTyped_MakeAggregateOp : RustTyped_Op<"aggregate"> {
+  let summary = "Build a typed Rust aggregate";
   let arguments = (ins Variadic<AnyType>:$values,
                        OptionalAttr<StrAttr>:$span);
   let results = (outs AnyType:$result);
@@ -145,7 +145,7 @@ def RustTyped_MakeTupleOp : RustTyped_Op<"aggregate"> {
 }
 
 def RustTyped_FieldOp : RustTyped_Op<"field"> {
-  let summary = "Extract a typed Rust tuple field";
+  let summary = "Extract a typed Rust indexed aggregate element";
   let arguments = (ins AnyType:$aggregate, I64Attr:$index,
                        OptionalAttr<StrAttr>:$span);
   let results = (outs AnyType:$result);

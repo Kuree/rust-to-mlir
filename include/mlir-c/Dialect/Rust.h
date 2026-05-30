@@ -56,6 +56,9 @@ MLIR_CAPI_EXPORTED MlirType rustTypedSlotTypeGet(MlirContext context,
 MLIR_CAPI_EXPORTED MlirType rustTypedTupleTypeGet(MlirContext context,
                                                   intptr_t numElementTypes,
                                                   MlirType const *elementTypes);
+MLIR_CAPI_EXPORTED MlirType rustTypedArrayTypeGet(MlirContext context,
+                                                  MlirType elementType,
+                                                  uint64_t length);
 
 MLIR_CAPI_EXPORTED MlirAttribute rustMirSwitchTargetsAttrGet(
     MlirContext context, int64_t otherwise, intptr_t numBranches,
