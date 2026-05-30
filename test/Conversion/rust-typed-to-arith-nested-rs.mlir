@@ -4,4 +4,4 @@
 // CHECK-LABEL: func.func @"nested_binop::nested_typed"(%arg0: i64, %arg1: i64, %arg2: i64) -> i64
 // CHECK-COUNT-2: arith.andi
 // CHECK: return {{.*}} : i64
-// CHECK-NOT: rust.typed.binop
+// CHECK-NOT: rust.typed.bit_and

@@ -5,9 +5,11 @@ pub fn add_flag(a: usize) -> usize {
 }
 
 // CHECK: rust.mir.assign
-// CHECK-SAME: rvalue = {kind = "BinaryOp"
-// CHECK-SAME: lhs = {kind = "Copy", place = {local = 1 : i64, projection = []}}
+// CHECK: rust.mir.binary_op
 // CHECK-SAME: op = "BitAnd"
-// CHECK-SAME: rhs = {debug = "3", kind = "Constant"
+// CHECK: rust.mir.copy
+// CHECK: rust.mir.place 1
+// CHECK: rust.mir.constant
+// CHECK-SAME: debug = "3"
 // CHECK-SAME: ty =
 // CHECK-SAME: value = 3 : i64

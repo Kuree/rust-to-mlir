@@ -284,6 +284,21 @@ struct TypedBlockConversion
   }
 };
 
+struct TypedAssertConversion
+    : public OpConversionPattern<rust::mir::TypedAssertOp> {
+  using OpConversionPattern<rust::mir::TypedAssertOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rust::mir::TypedAssertOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    StringRef msg = "rust assert";
+    if (auto msgAttr = op.getMsgAttr())
+      msg = msgAttr.getValue();
+    rewriter.replaceOpWithNewOp<cf::AssertOp>(op, adaptor.getCond(), msg);
+    return success();
+  }
+};
+
 struct ConvertRustTypedToControlFlowPass
     : public mlir::impl::ConvertRustTypedToControlFlowPassBase<
           ConvertRustTypedToControlFlowPass> {
@@ -295,11 +310,12 @@ struct ConvertRustTypedToControlFlowPass
                            rust::mir::RustMIRDialect>();
     target
         .addIllegalOp<rust::mir::TypedBlockOp, rust::mir::TypedGotoOp,
-                      rust::mir::TypedReturnOp, rust::mir::TypedSwitchIntOp>();
+                      rust::mir::TypedReturnOp, rust::mir::TypedSwitchIntOp,
+                      rust::mir::TypedAssertOp>();
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
     RewritePatternSet patterns(context);
-    patterns.add<TypedBlockConversion>(context);
+    patterns.add<TypedBlockConversion, TypedAssertConversion>(context);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
   }

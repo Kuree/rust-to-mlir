@@ -1,7 +1,7 @@
 // RUN: %rust_mir_extract --crate-root %S/../Inputs/bitand_locations.rs --emit-bytecode -o %t.mlirbc
 // RUN: rust-opt %t.mlirbc --rust-lift-typed-mir --mlir-print-debuginfo | FileCheck %s
 
-// CHECK: rust.typed.binop
+// CHECK: rust.typed.bit_and
 // CHECK-SAME: loc(#[[ADD_LOC:loc[0-9]+]])
 // CHECK: rust.typed.store
 // CHECK-SAME: loc(#[[ADD_LOC]])

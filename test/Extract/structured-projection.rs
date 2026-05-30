@@ -5,6 +5,9 @@ pub fn second(pair: (usize, usize)) -> usize {
 }
 
 // CHECK: rust.mir.assign
-// CHECK-SAME: place = {local = 0 : i64, projection = []}
-// CHECK-SAME: operand = {kind = "Copy"
-// CHECK-SAME: local = 1 : i64, projection = [{index = 1 : i64, kind = "Field"
+// CHECK: rust.mir.place 0
+// CHECK: rust.mir.use
+// CHECK: rust.mir.copy
+// CHECK: rust.mir.place 1
+// CHECK: rust.mir.projection_field
+// CHECK-SAME: index = 1 : i64

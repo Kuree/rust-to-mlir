@@ -7,8 +7,10 @@ add_mlir_conversion_library(RustToLLVMRustTypedToArith
   LINK_LIBS PUBLIC
   RustToLLVMRustMIRDialect
   MLIRArithDialect
+  MLIRControlFlowDialect
   MLIRDataLayoutInterfaces
   MLIRIR
+  MLIRLLVMDialect
   MLIRPass
   MLIRSupport
   MLIRTransformUtils

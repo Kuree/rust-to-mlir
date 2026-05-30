@@ -206,6 +206,40 @@ MlirAttribute wrapDictionary(MLIRContext *context,
 MlirOperation createOperation(OperationState &state) {
   return wrap(Operation::create(state));
 }
+
+MlirOperation createRegionOperation(OperationState &state) {
+  state.addRegion();
+  Operation *op = Operation::create(state);
+  op->getRegion(0).push_back(new Block());
+  return wrap(op);
+}
+
+void appendOwnedChild(Operation *parent, MlirOperation child) {
+  if (!child.ptr)
+    return;
+  parent->getRegion(0).front().push_back(unwrap(child));
+}
+
+void appendOwnedChildren(Operation *parent, intptr_t numChildren,
+                         MlirOperation const *children) {
+  for (intptr_t i = 0; i < numChildren; ++i)
+    appendOwnedChild(parent, children[i]);
+}
+
+StringRef binaryRvalueOpName(MlirStringRef kind) {
+  if (unwrap(kind) == "CheckedBinaryOp")
+    return "rust.mir.checked_binary_op";
+  return "rust.mir.binary_op";
+}
+
+StringRef operandDebugOpName(MlirStringRef kind) {
+  StringRef kindRef = unwrap(kind);
+  if (kindRef == "Constant")
+    return "rust.mir.constant";
+  if (kindRef == "RuntimeChecks")
+    return "rust.mir.runtime_checks";
+  return "rust.mir.unsupported_statement";
+}
 } // namespace
 
 MlirContext rustMlirContextCreate(void) {
@@ -405,180 +439,6 @@ MlirType rustTypedTupleTypeGet(MlirContext context, intptr_t numElementTypes,
   return wrap(rustmir::TypedTupleType::get(ctx, ArrayRef<Type>(types)));
 }
 
-MlirAttribute rustMirProjectionAttrGet(MlirContext context, MlirStringRef kind,
-                                       MlirStringRef debug) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", stringAttr(ctx, kind)));
-  attrs.push_back(named(builder, "debug", stringAttr(ctx, debug)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirProjectionFieldAttrGet(MlirContext context, int64_t index,
-                                            MlirStringRef type) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", builder.getStringAttr("Field")));
-  attrs.push_back(named(builder, "index", builder.getI64IntegerAttr(index)));
-  attrs.push_back(named(builder, "ty", stringAttr(ctx, type)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirPlaceAttrGet(MlirContext context, int64_t local,
-                                  intptr_t numProjections,
-                                  MlirAttribute const *projections) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<Attribute> projectionAttrs;
-  projectionAttrs.reserve(numProjections);
-  for (intptr_t i = 0; i < numProjections; ++i)
-    projectionAttrs.push_back(unwrap(projections[i]));
-
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "local", builder.getI64IntegerAttr(local)));
-  attrs.push_back(
-      named(builder, "projection", builder.getArrayAttr(projectionAttrs)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirOperandCopyAttrGet(MlirContext context,
-                                        MlirAttribute place) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", builder.getStringAttr("Copy")));
-  attrs.push_back(named(builder, "place", unwrap(place)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirOperandMoveAttrGet(MlirContext context,
-                                        MlirAttribute place) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", builder.getStringAttr("Move")));
-  attrs.push_back(named(builder, "place", unwrap(place)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirOperandConstantI64AttrGet(MlirContext context,
-                                               int64_t value,
-                                               MlirStringRef debug,
-                                               MlirStringRef type) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", builder.getStringAttr("Constant")));
-  attrs.push_back(named(builder, "value", builder.getI64IntegerAttr(value)));
-  attrs.push_back(named(builder, "debug", stringAttr(ctx, debug)));
-  attrs.push_back(named(builder, "ty", stringAttr(ctx, type)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirOperandDebugAttrGet(MlirContext context,
-                                         MlirStringRef kind,
-                                         MlirStringRef debug) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", stringAttr(ctx, kind)));
-  attrs.push_back(named(builder, "debug", stringAttr(ctx, debug)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirRvalueBinaryOpAttrGet(MlirContext context,
-                                           MlirStringRef kind, MlirStringRef op,
-                                           MlirAttribute lhs,
-                                           MlirAttribute rhs) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", stringAttr(ctx, kind)));
-  attrs.push_back(named(builder, "op", stringAttr(ctx, op)));
-  attrs.push_back(named(builder, "lhs", unwrap(lhs)));
-  attrs.push_back(named(builder, "rhs", unwrap(rhs)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirRvalueUnaryOpAttrGet(MlirContext context,
-                                          MlirStringRef kind, MlirStringRef op,
-                                          MlirAttribute operand) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", stringAttr(ctx, kind)));
-  attrs.push_back(named(builder, "op", stringAttr(ctx, op)));
-  attrs.push_back(named(builder, "operand", unwrap(operand)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirRvalueAggregateAttrGet(MlirContext context,
-                                            MlirStringRef kind,
-                                            MlirStringRef aggregateKind,
-                                            intptr_t numOperands,
-                                            MlirAttribute const *operands) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<Attribute> operandAttrs;
-  operandAttrs.reserve(numOperands);
-  for (intptr_t i = 0; i < numOperands; ++i)
-    operandAttrs.push_back(unwrap(operands[i]));
-
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", stringAttr(ctx, kind)));
-  attrs.push_back(
-      named(builder, "aggregate_kind", stringAttr(ctx, aggregateKind)));
-  attrs.push_back(
-      named(builder, "operands", builder.getArrayAttr(operandAttrs)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirRvalueUseAttrGet(MlirContext context,
-                                      MlirAttribute operand) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", builder.getStringAttr("Use")));
-  attrs.push_back(named(builder, "operand", unwrap(operand)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirRvalueDebugAttrGet(MlirContext context, MlirStringRef kind,
-                                        MlirStringRef debug) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", stringAttr(ctx, kind)));
-  attrs.push_back(named(builder, "debug", stringAttr(ctx, debug)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirAssignPayloadAttrGet(MlirContext context,
-                                          MlirAttribute place,
-                                          MlirAttribute rvalue) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "place", unwrap(place)));
-  attrs.push_back(named(builder, "rvalue", unwrap(rvalue)));
-  return wrapDictionary(ctx, attrs);
-}
-
-MlirAttribute rustMirTargetPayloadAttrGet(MlirContext context,
-                                          MlirStringRef kind, int64_t target,
-                                          MlirStringRef debug) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", stringAttr(ctx, kind)));
-  attrs.push_back(named(builder, "target", builder.getI64IntegerAttr(target)));
-  if (debug.data || debug.length != 0)
-    attrs.push_back(named(builder, "debug", stringAttr(ctx, debug)));
-  return wrapDictionary(ctx, attrs);
-}
-
 MlirAttribute rustMirSwitchTargetsAttrGet(MlirContext context,
                                           int64_t otherwise,
                                           intptr_t numBranches,
@@ -597,34 +457,189 @@ MlirAttribute rustMirSwitchTargetsAttrGet(MlirContext context,
   return wrapDictionary(ctx, attrs);
 }
 
-MlirAttribute rustMirSwitchIntPayloadAttrGet(MlirContext context,
-                                             MlirAttribute discr,
-                                             MlirAttribute targets,
-                                             MlirStringRef debug) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", builder.getStringAttr("SwitchInt")));
-  attrs.push_back(named(builder, "discr", unwrap(discr)));
-  attrs.push_back(named(builder, "targets", unwrap(targets)));
-  if (debug.data || debug.length != 0)
-    attrs.push_back(named(builder, "debug", stringAttr(ctx, debug)));
-  return wrapDictionary(ctx, attrs);
+MlirOperation rustMirProjectionCreate(MlirLocation location, MlirStringRef kind,
+                                      MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  OperationState state(unwrap(location), "rust.mir.projection");
+  addStringAttr(context, state, "mir_kind", kind);
+  addStringAttr(context, state, "debug", debug);
+  return createOperation(state);
 }
 
-MlirAttribute rustMirAssertPayloadAttrGet(MlirContext context,
-                                          MlirAttribute cond, bool expected,
-                                          int64_t target, MlirStringRef debug) {
-  MLIRContext *ctx = unwrap(context);
-  Builder builder(ctx);
-  SmallVector<NamedAttribute> attrs;
-  attrs.push_back(named(builder, "kind", builder.getStringAttr("Assert")));
-  attrs.push_back(named(builder, "cond", unwrap(cond)));
-  attrs.push_back(named(builder, "expected", builder.getBoolAttr(expected)));
-  attrs.push_back(named(builder, "target", builder.getI64IntegerAttr(target)));
-  if (debug.data || debug.length != 0)
-    attrs.push_back(named(builder, "debug", stringAttr(ctx, debug)));
-  return wrapDictionary(ctx, attrs);
+MlirOperation rustMirProjectionFieldCreate(MlirLocation location,
+                                           int64_t index,
+                                           MlirStringRef type) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.projection_field");
+  state.addAttribute("index", builder.getI64IntegerAttr(index));
+  addStringAttr(context, state, "ty", type);
+  state.addAttribute("mir_kind", builder.getStringAttr("Field"));
+  return createOperation(state);
+}
+
+MlirOperation rustMirPlaceCreate(MlirLocation location, int64_t local,
+                                 intptr_t numProjections,
+                                 MlirOperation const *projections) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.place");
+  state.addAttribute("local", builder.getI64IntegerAttr(local));
+  MlirOperation wrapped = createRegionOperation(state);
+  Operation *op = unwrap(wrapped);
+  appendOwnedChildren(op, numProjections, projections);
+  return wrapped;
+}
+
+MlirOperation rustMirCopyCreate(MlirLocation location, MlirOperation place) {
+  OperationState state(unwrap(location), "rust.mir.copy");
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), place);
+  return wrapped;
+}
+
+MlirOperation rustMirMoveCreate(MlirLocation location, MlirOperation place) {
+  OperationState state(unwrap(location), "rust.mir.move");
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), place);
+  return wrapped;
+}
+
+MlirOperation rustMirConstantI64Create(MlirLocation location, int64_t value,
+                                       MlirStringRef debug,
+                                       MlirStringRef type) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.constant");
+  state.addAttribute("value", builder.getI64IntegerAttr(value));
+  addStringAttr(context, state, "debug", debug);
+  addStringAttr(context, state, "ty", type);
+  state.addAttribute("mir_kind", builder.getStringAttr("Constant"));
+  return createOperation(state);
+}
+
+MlirOperation rustMirOperandDebugCreate(MlirLocation location,
+                                        MlirStringRef kind,
+                                        MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  OperationState state(unwrap(location), operandDebugOpName(kind));
+  addStringAttr(context, state, "mir_kind", kind);
+  addStringAttr(context, state, "debug", debug);
+  return createOperation(state);
+}
+
+MlirOperation rustMirRvalueBinaryOpCreate(MlirLocation location,
+                                          MlirStringRef kind, MlirStringRef op,
+                                          MlirOperation lhs,
+                                          MlirOperation rhs) {
+  MLIRContext *context = unwrap(location).getContext();
+  OperationState state(unwrap(location), binaryRvalueOpName(kind));
+  addStringAttr(context, state, "mir_kind", kind);
+  addStringAttr(context, state, "op", op);
+  MlirOperation wrapped = createRegionOperation(state);
+  Operation *operation = unwrap(wrapped);
+  appendOwnedChild(operation, lhs);
+  appendOwnedChild(operation, rhs);
+  return wrapped;
+}
+
+MlirOperation rustMirRvalueUnaryOpCreate(MlirLocation location,
+                                         MlirStringRef kind, MlirStringRef op,
+                                         MlirOperation operand) {
+  MLIRContext *context = unwrap(location).getContext();
+  OperationState state(unwrap(location), "rust.mir.unary_op");
+  addStringAttr(context, state, "mir_kind", kind);
+  addStringAttr(context, state, "op", op);
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), operand);
+  return wrapped;
+}
+
+MlirOperation rustMirRvalueAggregateCreate(MlirLocation location,
+                                           MlirStringRef kind,
+                                           MlirStringRef aggregateKind,
+                                           intptr_t numOperands,
+                                           MlirOperation const *operands) {
+  MLIRContext *context = unwrap(location).getContext();
+  OperationState state(unwrap(location), "rust.mir.aggregate");
+  addStringAttr(context, state, "mir_kind", kind);
+  addStringAttr(context, state, "aggregate_kind", aggregateKind);
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChildren(unwrap(wrapped), numOperands, operands);
+  return wrapped;
+}
+
+MlirOperation rustMirRvalueUseCreate(MlirLocation location,
+                                     MlirOperation operand) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.use");
+  state.addAttribute("mir_kind", builder.getStringAttr("Use"));
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), operand);
+  return wrapped;
+}
+
+MlirOperation rustMirDebugOpCreate(MlirLocation location, MlirStringRef opName,
+                                   MlirStringRef kind, MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  OperationState state(unwrap(location), unwrap(opName));
+  addStringAttr(context, state, "mir_kind", kind);
+  addStringAttr(context, state, "debug", debug);
+  return createOperation(state);
+}
+
+MlirOperation rustMirGotoCreate(MlirLocation location, int64_t target) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.goto");
+  state.addAttribute("target", builder.getI64IntegerAttr(target));
+  state.addAttribute("mir_kind", builder.getStringAttr("Goto"));
+  return createOperation(state);
+}
+
+MlirOperation rustMirSwitchIntCreate(MlirLocation location, MlirOperation discr,
+                                     MlirAttribute targets,
+                                     MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.switch_int");
+  if (targets.ptr)
+    state.addAttribute("targets", unwrap(targets));
+  state.addAttribute("mir_kind", builder.getStringAttr("SwitchInt"));
+  addStringAttr(context, state, "debug", debug);
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), discr);
+  return wrapped;
+}
+
+MlirOperation rustMirAssertCreate(MlirLocation location, MlirOperation cond,
+                                  bool expected, int64_t target,
+                                  MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.assert");
+  state.addAttribute("expected", builder.getBoolAttr(expected));
+  state.addAttribute("target", builder.getI64IntegerAttr(target));
+  state.addAttribute("mir_kind", builder.getStringAttr("Assert"));
+  addStringAttr(context, state, "debug", debug);
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), cond);
+  return wrapped;
+}
+
+MlirOperation rustMirTargetTerminatorCreate(MlirLocation location,
+                                            MlirStringRef opName,
+                                            MlirStringRef kind,
+                                            int64_t target,
+                                            MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), unwrap(opName));
+  state.addAttribute("target", builder.getI64IntegerAttr(target));
+  addStringAttr(context, state, "mir_kind", kind);
+  addStringAttr(context, state, "debug", debug);
+  return createOperation(state);
 }
 
 MlirOperation rustMirFuncCreate(MlirLocation location, MlirStringRef symName,
@@ -678,14 +693,17 @@ MlirOperation rustMirLocalCreate(MlirLocation location, int64_t index,
 }
 
 MlirOperation rustMirAssignCreate(MlirLocation location, int64_t index,
-                                  MlirAttribute payload) {
+                                  MlirOperation place, MlirOperation rvalue) {
   MLIRContext *context = unwrap(location).getContext();
   Builder builder(context);
   OperationState state(unwrap(location), kRustMIRAssign);
   state.addAttribute("index", builder.getI64IntegerAttr(index));
   state.addAttribute("mir_kind", builder.getStringAttr("Assign"));
-  state.addAttribute("payload", unwrap(payload));
-  return createOperation(state);
+  MlirOperation wrapped = createRegionOperation(state);
+  Operation *op = unwrap(wrapped);
+  appendOwnedChild(op, place);
+  appendOwnedChild(op, rvalue);
+  return wrapped;
 }
 
 MlirOperation rustMirReturnCreate(MlirLocation location) {
@@ -693,19 +711,5 @@ MlirOperation rustMirReturnCreate(MlirLocation location) {
   Builder builder(context);
   OperationState state(unwrap(location), kRustMIRReturn);
   state.addAttribute("mir_kind", builder.getStringAttr("Return"));
-  state.addAttribute("payload", builder.getDictionaryAttr({}));
-  return createOperation(state);
-}
-
-MlirOperation rustMirPayloadOpCreate(MlirLocation location,
-                                     MlirStringRef opName,
-                                     MlirStringRef mirKind,
-                                     MlirAttribute payload) {
-  MLIRContext *context = unwrap(location).getContext();
-  Builder builder(context);
-  OperationState state(unwrap(location), unwrap(opName));
-  addStringAttr(context, state, "mir_kind", mirKind);
-  if (payload.ptr)
-    state.addAttribute("payload", unwrap(payload));
   return createOperation(state);
 }

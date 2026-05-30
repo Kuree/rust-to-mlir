@@ -34,6 +34,17 @@ module {
       rust.typed.return %fallback : !rust.mir.int<"i32">
     }
   }
+
+  rust.typed.func @assert_branch {
+    %cond = rust.typed.const {debug = "true"} : i1
+    rust.typed.block 0 {
+      rust.typed.assert %cond {msg = "ok"} : i1
+      rust.typed.goto {target = 1 : i64}
+    }
+    rust.typed.block 1 {
+      rust.typed.return
+    }
+  }
 }
 
 // CHECK-LABEL: func.func @branch() -> !rust.mir.int<"i32">
@@ -60,3 +71,9 @@ module {
 // CHECK: 7: ^bb3
 // CHECK: ]
 // CHECK-NOT: rust.typed.switch_int
+
+// CHECK-LABEL: func.func @assert_branch()
+// CHECK: %[[ASSERT_COND:.*]] = rust.typed.const
+// CHECK: cf.assert %[[ASSERT_COND]], "ok"
+// CHECK: cf.br
+// CHECK-NOT: rust.typed.assert

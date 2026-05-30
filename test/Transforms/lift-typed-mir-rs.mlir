@@ -13,7 +13,6 @@
 // CHECK: rust.typed.block 0
 // CHECK: rust.typed.load
 // CHECK: rust.typed.load
-// CHECK: rust.typed.binop
-// CHECK-SAME: op = "BitAnd"
+// CHECK: rust.typed.bit_and
 // CHECK: rust.typed.store
 // CHECK: rust.typed.return

@@ -3,4 +3,5 @@
 // CHECK: module
 // CHECK: rust.mir.func @"arith::mask"
 // CHECK: rust.mir.assign
+// CHECK: rust.mir.binary_op
 // CHECK-SAME: op = "BitAnd"

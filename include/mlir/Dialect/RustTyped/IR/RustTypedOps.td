@@ -72,21 +72,69 @@ def RustTyped_TypedConstOp : RustTyped_Op<"const"> {
   let assemblyFormat = "attr-dict `:` type($result)";
 }
 
-def RustTyped_BinOp : RustTyped_Op<"binop"> {
-  let summary = "Typed Rust MIR binary operation";
-  let arguments = (ins AnyType:$lhs, AnyType:$rhs, StrAttr:$op,
+class RustTyped_BinaryOp<string mnemonic, string opSummary>
+    : RustTyped_Op<mnemonic> {
+  let summary = opSummary;
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs,
                        OptionalAttr<StrAttr>:$span);
   let results = (outs AnyType:$result);
   let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($result)";
 }
 
-def RustTyped_UnOp : RustTyped_Op<"unop"> {
-  let summary = "Typed Rust MIR unary operation";
-  let arguments = (ins AnyType:$input, StrAttr:$op,
+def RustTyped_AddOp : RustTyped_BinaryOp<"add", "Typed Rust MIR add">;
+def RustTyped_AddUncheckedOp
+    : RustTyped_BinaryOp<"add_unchecked", "Typed Rust MIR unchecked add">;
+def RustTyped_SubOp : RustTyped_BinaryOp<"sub", "Typed Rust MIR sub">;
+def RustTyped_SubUncheckedOp
+    : RustTyped_BinaryOp<"sub_unchecked", "Typed Rust MIR unchecked sub">;
+def RustTyped_MulOp : RustTyped_BinaryOp<"mul", "Typed Rust MIR mul">;
+def RustTyped_MulUncheckedOp
+    : RustTyped_BinaryOp<"mul_unchecked", "Typed Rust MIR unchecked mul">;
+def RustTyped_DivOp : RustTyped_BinaryOp<"div", "Typed Rust MIR div">;
+def RustTyped_RemOp : RustTyped_BinaryOp<"rem", "Typed Rust MIR rem">;
+def RustTyped_BitAndOp : RustTyped_BinaryOp<"bit_and", "Typed Rust MIR bit and">;
+def RustTyped_BitOrOp : RustTyped_BinaryOp<"bit_or", "Typed Rust MIR bit or">;
+def RustTyped_BitXorOp : RustTyped_BinaryOp<"bit_xor", "Typed Rust MIR bit xor">;
+def RustTyped_ShlOp : RustTyped_BinaryOp<"shl", "Typed Rust MIR shift left">;
+def RustTyped_ShlUncheckedOp
+    : RustTyped_BinaryOp<"shl_unchecked", "Typed Rust MIR unchecked shift left">;
+def RustTyped_ShrOp : RustTyped_BinaryOp<"shr", "Typed Rust MIR shift right">;
+def RustTyped_ShrUncheckedOp
+    : RustTyped_BinaryOp<"shr_unchecked", "Typed Rust MIR unchecked shift right">;
+def RustTyped_EqOp : RustTyped_BinaryOp<"eq", "Typed Rust MIR equal">;
+def RustTyped_NeOp : RustTyped_BinaryOp<"ne", "Typed Rust MIR not equal">;
+def RustTyped_LtOp : RustTyped_BinaryOp<"lt", "Typed Rust MIR less than">;
+def RustTyped_LeOp : RustTyped_BinaryOp<"le", "Typed Rust MIR less or equal">;
+def RustTyped_GtOp : RustTyped_BinaryOp<"gt", "Typed Rust MIR greater than">;
+def RustTyped_GeOp : RustTyped_BinaryOp<"ge", "Typed Rust MIR greater or equal">;
+
+class RustTyped_CheckedBinaryOp<string mnemonic, string opSummary>
+    : RustTyped_Op<mnemonic> {
+  let summary = opSummary;
+  let arguments = (ins AnyType:$lhs, AnyType:$rhs,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs AnyType:$value, AnyType:$overflow);
+  let assemblyFormat = "$lhs `,` $rhs attr-dict `:` type($lhs) `,` type($rhs) `->` type($value) `,` type($overflow)";
+}
+
+def RustTyped_CheckedAddOp
+    : RustTyped_CheckedBinaryOp<"checked_add", "Typed Rust MIR checked add">;
+def RustTyped_CheckedSubOp
+    : RustTyped_CheckedBinaryOp<"checked_sub", "Typed Rust MIR checked sub">;
+def RustTyped_CheckedMulOp
+    : RustTyped_CheckedBinaryOp<"checked_mul", "Typed Rust MIR checked mul">;
+
+class RustTyped_UnaryOp<string mnemonic, string opSummary>
+    : RustTyped_Op<mnemonic> {
+  let summary = opSummary;
+  let arguments = (ins AnyType:$input,
                        OptionalAttr<StrAttr>:$span);
   let results = (outs AnyType:$result);
   let assemblyFormat = "$input attr-dict `:` type($input) `->` type($result)";
 }
+
+def RustTyped_NegOp : RustTyped_UnaryOp<"neg", "Typed Rust MIR negation">;
+def RustTyped_NotOp : RustTyped_UnaryOp<"not", "Typed Rust MIR bitwise not">;
 
 def RustTyped_MakeTupleOp : RustTyped_Op<"aggregate"> {
   let summary = "Build a typed Rust tuple aggregate";
@@ -115,6 +163,14 @@ def RustTyped_TypedSwitchIntOp : RustTyped_Op<"switch_int"> {
   let arguments = (ins AnyType:$discr, OptionalAttr<DictionaryAttr>:$targets,
                        OptionalAttr<StrAttr>:$span);
   let assemblyFormat = "$discr attr-dict `:` type($discr)";
+}
+
+def RustTyped_TypedAssertOp : RustTyped_Op<"assert"> {
+  let summary = "Typed Rust MIR assert";
+  let arguments = (ins AnyType:$cond,
+                       OptionalAttr<StrAttr>:$msg,
+                       OptionalAttr<StrAttr>:$span);
+  let assemblyFormat = "$cond attr-dict `:` type($cond)";
 }
 
 def RustTyped_TypedReturnOp : RustTyped_Op<"return"> {

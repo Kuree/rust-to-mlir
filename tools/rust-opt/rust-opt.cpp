@@ -11,6 +11,7 @@
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/RustMIR/IR/RustMIRDialect.h"
 #include "mlir/Dialect/RustMIR/Transforms/Passes.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
@@ -22,7 +23,8 @@ int main(int argc, char **argv) {
   mlir::DialectRegistry registry;
   registry.insert<mlir::arith::ArithDialect, mlir::cf::ControlFlowDialect,
                   mlir::DLTIDialect, mlir::func::FuncDialect,
-                  mlir::rust::mir::RustMIRDialect, mlir::ub::UBDialect>();
+                  mlir::LLVM::LLVMDialect, mlir::rust::mir::RustMIRDialect,
+                  mlir::ub::UBDialect>();
   mlir::registerConvertRustTypedToArithPass();
   mlir::registerConvertRustTypedToControlFlowPass();
   mlir::registerConvertRustTypedToFuncPass();

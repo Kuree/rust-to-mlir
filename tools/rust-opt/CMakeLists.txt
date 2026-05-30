@@ -17,6 +17,7 @@ target_link_libraries(rust-opt
   MLIRControlFlowDialect
   MLIRDLTIDialect
   MLIRFuncDialect
+  MLIRLLVMDialect
   MLIRTransforms
   MLIRUBDialect
   MLIRIR

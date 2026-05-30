@@ -99,47 +99,63 @@ type RustMirModuleSetTarget = unsafe extern "C" fn(MlirModule, i64, MlirStringRe
 type RustMirTypeFromRustcPublicString =
     unsafe extern "C" fn(MlirContext, MlirStringRef) -> MlirType;
 type RustTypedTupleTypeGet = unsafe extern "C" fn(MlirContext, isize, *const MlirType) -> MlirType;
-type RustMirProjectionAttrGet =
-    unsafe extern "C" fn(MlirContext, MlirStringRef, MlirStringRef) -> MlirAttribute;
-type RustMirProjectionFieldAttrGet =
-    unsafe extern "C" fn(MlirContext, i64, MlirStringRef) -> MlirAttribute;
-type RustMirPlaceAttrGet =
-    unsafe extern "C" fn(MlirContext, i64, isize, *const MlirAttribute) -> MlirAttribute;
-type RustMirOperandCopyAttrGet = unsafe extern "C" fn(MlirContext, MlirAttribute) -> MlirAttribute;
-type RustMirOperandMoveAttrGet = unsafe extern "C" fn(MlirContext, MlirAttribute) -> MlirAttribute;
-type RustMirOperandConstantI64AttrGet =
-    unsafe extern "C" fn(MlirContext, i64, MlirStringRef, MlirStringRef) -> MlirAttribute;
-type RustMirOperandDebugAttrGet =
-    unsafe extern "C" fn(MlirContext, MlirStringRef, MlirStringRef) -> MlirAttribute;
-type RustMirRvalueBinaryOpAttrGet = unsafe extern "C" fn(
-    MlirContext,
+type RustMirSwitchTargetsAttrGet =
+    unsafe extern "C" fn(MlirContext, i64, isize, *const i64, *const i64) -> MlirAttribute;
+type RustMirProjectionCreate =
+    unsafe extern "C" fn(MlirLocation, MlirStringRef, MlirStringRef) -> MlirOperation;
+type RustMirProjectionFieldCreate =
+    unsafe extern "C" fn(MlirLocation, i64, MlirStringRef) -> MlirOperation;
+type RustMirPlaceCreate =
+    unsafe extern "C" fn(MlirLocation, i64, isize, *const MlirOperation) -> MlirOperation;
+type RustMirCopyCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
+type RustMirMoveCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
+type RustMirConstantI64Create =
+    unsafe extern "C" fn(MlirLocation, i64, MlirStringRef, MlirStringRef) -> MlirOperation;
+type RustMirOperandDebugCreate =
+    unsafe extern "C" fn(MlirLocation, MlirStringRef, MlirStringRef) -> MlirOperation;
+type RustMirRvalueBinaryOpCreate = unsafe extern "C" fn(
+    MlirLocation,
     MlirStringRef,
     MlirStringRef,
-    MlirAttribute,
-    MlirAttribute,
-) -> MlirAttribute;
-type RustMirRvalueUnaryOpAttrGet =
-    unsafe extern "C" fn(MlirContext, MlirStringRef, MlirStringRef, MlirAttribute) -> MlirAttribute;
-type RustMirRvalueAggregateAttrGet = unsafe extern "C" fn(
-    MlirContext,
+    MlirOperation,
+    MlirOperation,
+) -> MlirOperation;
+type RustMirRvalueUnaryOpCreate = unsafe extern "C" fn(
+    MlirLocation,
+    MlirStringRef,
+    MlirStringRef,
+    MlirOperation,
+) -> MlirOperation;
+type RustMirRvalueAggregateCreate = unsafe extern "C" fn(
+    MlirLocation,
     MlirStringRef,
     MlirStringRef,
     isize,
-    *const MlirAttribute,
-) -> MlirAttribute;
-type RustMirRvalueUseAttrGet = unsafe extern "C" fn(MlirContext, MlirAttribute) -> MlirAttribute;
-type RustMirRvalueDebugAttrGet =
-    unsafe extern "C" fn(MlirContext, MlirStringRef, MlirStringRef) -> MlirAttribute;
-type RustMirAssignPayloadAttrGet =
-    unsafe extern "C" fn(MlirContext, MlirAttribute, MlirAttribute) -> MlirAttribute;
-type RustMirTargetPayloadAttrGet =
-    unsafe extern "C" fn(MlirContext, MlirStringRef, i64, MlirStringRef) -> MlirAttribute;
-type RustMirSwitchTargetsAttrGet =
-    unsafe extern "C" fn(MlirContext, i64, isize, *const i64, *const i64) -> MlirAttribute;
-type RustMirSwitchIntPayloadAttrGet =
-    unsafe extern "C" fn(MlirContext, MlirAttribute, MlirAttribute, MlirStringRef) -> MlirAttribute;
-type RustMirAssertPayloadAttrGet =
-    unsafe extern "C" fn(MlirContext, MlirAttribute, bool, i64, MlirStringRef) -> MlirAttribute;
+    *const MlirOperation,
+) -> MlirOperation;
+type RustMirRvalueUseCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
+type RustMirDebugOpCreate = unsafe extern "C" fn(
+    MlirLocation,
+    MlirStringRef,
+    MlirStringRef,
+    MlirStringRef,
+) -> MlirOperation;
+type RustMirGotoCreate = unsafe extern "C" fn(MlirLocation, i64) -> MlirOperation;
+type RustMirSwitchIntCreate = unsafe extern "C" fn(
+    MlirLocation,
+    MlirOperation,
+    MlirAttribute,
+    MlirStringRef,
+) -> MlirOperation;
+type RustMirAssertCreate =
+    unsafe extern "C" fn(MlirLocation, MlirOperation, bool, i64, MlirStringRef) -> MlirOperation;
+type RustMirTargetTerminatorCreate = unsafe extern "C" fn(
+    MlirLocation,
+    MlirStringRef,
+    MlirStringRef,
+    i64,
+    MlirStringRef,
+) -> MlirOperation;
 type RustMirFuncCreate = unsafe extern "C" fn(
     MlirLocation,
     MlirStringRef,
@@ -158,14 +174,9 @@ type RustMirLocalCreate = unsafe extern "C" fn(
     MlirType,
     MlirStringRef,
 ) -> MlirOperation;
-type RustMirAssignCreate = unsafe extern "C" fn(MlirLocation, i64, MlirAttribute) -> MlirOperation;
+type RustMirAssignCreate =
+    unsafe extern "C" fn(MlirLocation, i64, MlirOperation, MlirOperation) -> MlirOperation;
 type RustMirReturnCreate = unsafe extern "C" fn(MlirLocation) -> MlirOperation;
-type RustMirPayloadOpCreate = unsafe extern "C" fn(
-    MlirLocation,
-    MlirStringRef,
-    MlirStringRef,
-    MlirAttribute,
-) -> MlirOperation;
 
 struct MlirApi {
     _library_handle: *mut c_void,
@@ -185,30 +196,29 @@ struct MlirApi {
     module_set_target: RustMirModuleSetTarget,
     type_from_rustc_public_string: RustMirTypeFromRustcPublicString,
     typed_tuple_type_get: RustTypedTupleTypeGet,
-    projection_attr_get: RustMirProjectionAttrGet,
-    projection_field_attr_get: RustMirProjectionFieldAttrGet,
-    place_attr_get: RustMirPlaceAttrGet,
-    operand_copy_attr_get: RustMirOperandCopyAttrGet,
-    operand_move_attr_get: RustMirOperandMoveAttrGet,
-    operand_constant_i64_attr_get: RustMirOperandConstantI64AttrGet,
-    operand_debug_attr_get: RustMirOperandDebugAttrGet,
-    rvalue_binary_op_attr_get: RustMirRvalueBinaryOpAttrGet,
-    rvalue_unary_op_attr_get: RustMirRvalueUnaryOpAttrGet,
-    rvalue_aggregate_attr_get: RustMirRvalueAggregateAttrGet,
-    rvalue_use_attr_get: RustMirRvalueUseAttrGet,
-    rvalue_debug_attr_get: RustMirRvalueDebugAttrGet,
-    assign_payload_attr_get: RustMirAssignPayloadAttrGet,
-    target_payload_attr_get: RustMirTargetPayloadAttrGet,
     switch_targets_attr_get: RustMirSwitchTargetsAttrGet,
-    switch_int_payload_attr_get: RustMirSwitchIntPayloadAttrGet,
-    assert_payload_attr_get: RustMirAssertPayloadAttrGet,
+    projection_create: RustMirProjectionCreate,
+    projection_field_create: RustMirProjectionFieldCreate,
+    place_create: RustMirPlaceCreate,
+    copy_create: RustMirCopyCreate,
+    move_create: RustMirMoveCreate,
+    constant_i64_create: RustMirConstantI64Create,
+    operand_debug_create: RustMirOperandDebugCreate,
+    rvalue_binary_op_create: RustMirRvalueBinaryOpCreate,
+    rvalue_unary_op_create: RustMirRvalueUnaryOpCreate,
+    rvalue_aggregate_create: RustMirRvalueAggregateCreate,
+    rvalue_use_create: RustMirRvalueUseCreate,
+    debug_op_create: RustMirDebugOpCreate,
+    goto_create: RustMirGotoCreate,
+    switch_int_create: RustMirSwitchIntCreate,
+    assert_create: RustMirAssertCreate,
+    target_terminator_create: RustMirTargetTerminatorCreate,
     func_create: RustMirFuncCreate,
     block_create: RustMirBlockCreate,
     operation_get_body_block: RustMirOperationGetBodyBlock,
     local_create: RustMirLocalCreate,
     assign_create: RustMirAssignCreate,
     return_create: RustMirReturnCreate,
-    payload_op_create: RustMirPayloadOpCreate,
 }
 
 impl MlirApi {
@@ -248,33 +258,29 @@ impl MlirApi {
                     "rustMirTypeFromRustcPublicString",
                 )?,
                 typed_tuple_type_get: load_symbol(handle, "rustTypedTupleTypeGet")?,
-                projection_attr_get: load_symbol(handle, "rustMirProjectionAttrGet")?,
-                projection_field_attr_get: load_symbol(handle, "rustMirProjectionFieldAttrGet")?,
-                place_attr_get: load_symbol(handle, "rustMirPlaceAttrGet")?,
-                operand_copy_attr_get: load_symbol(handle, "rustMirOperandCopyAttrGet")?,
-                operand_move_attr_get: load_symbol(handle, "rustMirOperandMoveAttrGet")?,
-                operand_constant_i64_attr_get: load_symbol(
-                    handle,
-                    "rustMirOperandConstantI64AttrGet",
-                )?,
-                operand_debug_attr_get: load_symbol(handle, "rustMirOperandDebugAttrGet")?,
-                rvalue_binary_op_attr_get: load_symbol(handle, "rustMirRvalueBinaryOpAttrGet")?,
-                rvalue_unary_op_attr_get: load_symbol(handle, "rustMirRvalueUnaryOpAttrGet")?,
-                rvalue_aggregate_attr_get: load_symbol(handle, "rustMirRvalueAggregateAttrGet")?,
-                rvalue_use_attr_get: load_symbol(handle, "rustMirRvalueUseAttrGet")?,
-                rvalue_debug_attr_get: load_symbol(handle, "rustMirRvalueDebugAttrGet")?,
-                assign_payload_attr_get: load_symbol(handle, "rustMirAssignPayloadAttrGet")?,
-                target_payload_attr_get: load_symbol(handle, "rustMirTargetPayloadAttrGet")?,
                 switch_targets_attr_get: load_symbol(handle, "rustMirSwitchTargetsAttrGet")?,
-                switch_int_payload_attr_get: load_symbol(handle, "rustMirSwitchIntPayloadAttrGet")?,
-                assert_payload_attr_get: load_symbol(handle, "rustMirAssertPayloadAttrGet")?,
+                projection_create: load_symbol(handle, "rustMirProjectionCreate")?,
+                projection_field_create: load_symbol(handle, "rustMirProjectionFieldCreate")?,
+                place_create: load_symbol(handle, "rustMirPlaceCreate")?,
+                copy_create: load_symbol(handle, "rustMirCopyCreate")?,
+                move_create: load_symbol(handle, "rustMirMoveCreate")?,
+                constant_i64_create: load_symbol(handle, "rustMirConstantI64Create")?,
+                operand_debug_create: load_symbol(handle, "rustMirOperandDebugCreate")?,
+                rvalue_binary_op_create: load_symbol(handle, "rustMirRvalueBinaryOpCreate")?,
+                rvalue_unary_op_create: load_symbol(handle, "rustMirRvalueUnaryOpCreate")?,
+                rvalue_aggregate_create: load_symbol(handle, "rustMirRvalueAggregateCreate")?,
+                rvalue_use_create: load_symbol(handle, "rustMirRvalueUseCreate")?,
+                debug_op_create: load_symbol(handle, "rustMirDebugOpCreate")?,
+                goto_create: load_symbol(handle, "rustMirGotoCreate")?,
+                switch_int_create: load_symbol(handle, "rustMirSwitchIntCreate")?,
+                assert_create: load_symbol(handle, "rustMirAssertCreate")?,
+                target_terminator_create: load_symbol(handle, "rustMirTargetTerminatorCreate")?,
                 func_create: load_symbol(handle, "rustMirFuncCreate")?,
                 block_create: load_symbol(handle, "rustMirBlockCreate")?,
                 operation_get_body_block: load_symbol(handle, "rustMirOperationGetBodyBlock")?,
                 local_create: load_symbol(handle, "rustMirLocalCreate")?,
                 assign_create: load_symbol(handle, "rustMirAssignCreate")?,
                 return_create: load_symbol(handle, "rustMirReturnCreate")?,
-                payload_op_create: load_symbol(handle, "rustMirPayloadOpCreate")?,
             })
         }
     }
@@ -991,19 +997,18 @@ impl MlirEmitter {
                 place,
                 rvalue,
             } => {
-                let place_attr = self.place_attr(place);
-                let rvalue_attr = self.rvalue_attr(rvalue);
-                let payload = unsafe {
-                    (self.api.assign_payload_attr_get)(self.context, place_attr, rvalue_attr)
-                };
-                unsafe { (self.api.assign_create)(self.location(span), *index as i64, payload) }
+                let place = self.place_op(place, span);
+                let rvalue = self.rvalue_op(rvalue, span);
+                unsafe {
+                    (self.api.assign_create)(self.location(span), *index as i64, place, rvalue)
+                }
             }
             MirStatement::Unsupported {
                 span,
                 kind,
                 debug,
                 op_name,
-            } => self.payload_op(span, op_name, kind, self.debug_payload(kind, debug)),
+            } => self.debug_op(span, op_name, kind, debug),
         }
     }
 
@@ -1012,24 +1017,16 @@ impl MlirEmitter {
             MirTerminator::Return { span } => unsafe {
                 (self.api.return_create)(self.location(span))
             },
-            MirTerminator::Goto { span, target } => {
-                let payload = unsafe {
-                    (self.api.target_payload_attr_get)(
-                        self.context,
-                        mlir_string("Goto"),
-                        *target as i64,
-                        mlir_string(""),
-                    )
-                };
-                self.payload_op(span, "rust.mir.goto", "Goto", payload)
-            }
+            MirTerminator::Goto { span, target } => unsafe {
+                (self.api.goto_create)(self.location(span), *target as i64)
+            },
             MirTerminator::SwitchInt {
                 span,
                 discr,
                 targets,
                 debug,
             } => {
-                let discr = self.operand_attr(discr);
+                let discr = self.operand_op(discr, span);
                 let values = targets
                     .branches
                     .iter()
@@ -1049,15 +1046,14 @@ impl MlirEmitter {
                         branch_targets.as_ptr(),
                     )
                 };
-                let payload = unsafe {
-                    (self.api.switch_int_payload_attr_get)(
-                        self.context,
+                unsafe {
+                    (self.api.switch_int_create)(
+                        self.location(span),
                         discr,
                         targets_attr,
                         mlir_string(debug),
                     )
-                };
-                self.payload_op(span, "rust.mir.switch_int", "SwitchInt", payload)
+                }
             }
             MirTerminator::Assert {
                 span,
@@ -1066,17 +1062,16 @@ impl MlirEmitter {
                 target,
                 debug,
             } => {
-                let cond = self.operand_attr(cond);
-                let payload = unsafe {
-                    (self.api.assert_payload_attr_get)(
-                        self.context,
+                let cond = self.operand_op(cond, span);
+                unsafe {
+                    (self.api.assert_create)(
+                        self.location(span),
                         cond,
                         *expected,
                         *target as i64,
                         mlir_string(debug),
                     )
-                };
-                self.payload_op(span, "rust.mir.assert", "Assert", payload)
+                }
             }
             MirTerminator::Target {
                 span,
@@ -1084,39 +1079,31 @@ impl MlirEmitter {
                 target,
                 debug,
                 op_name,
-            } => {
-                let payload = unsafe {
-                    (self.api.target_payload_attr_get)(
-                        self.context,
-                        mlir_string(kind),
-                        *target as i64,
-                        mlir_string(debug),
-                    )
-                };
-                self.payload_op(span, op_name, kind, payload)
-            }
+            } => unsafe {
+                (self.api.target_terminator_create)(
+                    self.location(span),
+                    mlir_string(op_name),
+                    mlir_string(kind),
+                    *target as i64,
+                    mlir_string(debug),
+                )
+            },
             MirTerminator::Unsupported {
                 span,
                 kind,
                 debug,
                 op_name,
-            } => self.payload_op(span, op_name, kind, self.debug_payload(kind, debug)),
+            } => self.debug_op(span, op_name, kind, debug),
         }
     }
 
-    fn payload_op(
-        &self,
-        span: &str,
-        op_name: &str,
-        mir_kind: &str,
-        payload: MlirAttribute,
-    ) -> MlirOperation {
+    fn debug_op(&self, span: &str, op_name: &str, mir_kind: &str, debug: &str) -> MlirOperation {
         unsafe {
-            (self.api.payload_op_create)(
+            (self.api.debug_op_create)(
                 self.location(span),
                 mlir_string(op_name),
                 mlir_string(mir_kind),
-                payload,
+                mlir_string(debug),
             )
         }
     }
@@ -1148,26 +1135,34 @@ impl MlirEmitter {
         }
     }
 
-    fn projection_attr(&self, projection: &MirProjection) -> MlirAttribute {
+    fn projection_op(&self, projection: &MirProjection, span: &str) -> MlirOperation {
         match projection {
             MirProjection::Field { index, ty } => unsafe {
-                (self.api.projection_field_attr_get)(self.context, *index as i64, mlir_string(ty))
+                (self.api.projection_field_create)(
+                    self.location(span),
+                    *index as i64,
+                    mlir_string(ty),
+                )
             },
             MirProjection::Unsupported { kind, debug } => unsafe {
-                (self.api.projection_attr_get)(self.context, mlir_string(kind), mlir_string(debug))
+                (self.api.projection_create)(
+                    self.location(span),
+                    mlir_string(kind),
+                    mlir_string(debug),
+                )
             },
         }
     }
 
-    fn place_attr(&self, place: &MirPlace) -> MlirAttribute {
+    fn place_op(&self, place: &MirPlace, span: &str) -> MlirOperation {
         let projections = place
             .projection
             .iter()
-            .map(|projection| self.projection_attr(projection))
+            .map(|projection| self.projection_op(projection, span))
             .collect::<Vec<_>>();
         unsafe {
-            (self.api.place_attr_get)(
-                self.context,
+            (self.api.place_create)(
+                self.location(span),
                 place.local as i64,
                 projections.len() as isize,
                 projections.as_ptr(),
@@ -1175,21 +1170,21 @@ impl MlirEmitter {
         }
     }
 
-    fn operand_attr(&self, operand: &MirOperand) -> MlirAttribute {
+    fn operand_op(&self, operand: &MirOperand, span: &str) -> MlirOperation {
         match operand {
             MirOperand::Copy(place) => {
-                let place = self.place_attr(place);
-                unsafe { (self.api.operand_copy_attr_get)(self.context, place) }
+                let place = self.place_op(place, span);
+                unsafe { (self.api.copy_create)(self.location(span), place) }
             }
             MirOperand::Move(place) => {
-                let place = self.place_attr(place);
-                unsafe { (self.api.operand_move_attr_get)(self.context, place) }
+                let place = self.place_op(place, span);
+                unsafe { (self.api.move_create)(self.location(span), place) }
             }
             MirOperand::Constant(constant) => {
                 if let Some(value) = constant.value {
                     unsafe {
-                        (self.api.operand_constant_i64_attr_get)(
-                            self.context,
+                        (self.api.constant_i64_create)(
+                            self.location(span),
                             value,
                             mlir_string(&constant.debug),
                             mlir_string(&constant.ty),
@@ -1197,8 +1192,8 @@ impl MlirEmitter {
                     }
                 } else {
                     unsafe {
-                        (self.api.operand_debug_attr_get)(
-                            self.context,
+                        (self.api.operand_debug_create)(
+                            self.location(span),
                             mlir_string("Constant"),
                             mlir_string(&constant.debug),
                         )
@@ -1206,8 +1201,8 @@ impl MlirEmitter {
                 }
             }
             MirOperand::RuntimeChecks { debug } => unsafe {
-                (self.api.operand_debug_attr_get)(
-                    self.context,
+                (self.api.operand_debug_create)(
+                    self.location(span),
                     mlir_string("RuntimeChecks"),
                     mlir_string(debug),
                 )
@@ -1215,14 +1210,14 @@ impl MlirEmitter {
         }
     }
 
-    fn rvalue_attr(&self, rvalue: &MirRvalue) -> MlirAttribute {
+    fn rvalue_op(&self, rvalue: &MirRvalue, span: &str) -> MlirOperation {
         match rvalue {
             MirRvalue::BinaryOp { kind, op, lhs, rhs } => {
-                let lhs = self.operand_attr(lhs);
-                let rhs = self.operand_attr(rhs);
+                let lhs = self.operand_op(lhs, span);
+                let rhs = self.operand_op(rhs, span);
                 unsafe {
-                    (self.api.rvalue_binary_op_attr_get)(
-                        self.context,
+                    (self.api.rvalue_binary_op_create)(
+                        self.location(span),
                         mlir_string(kind),
                         mlir_string(op),
                         lhs,
@@ -1231,10 +1226,10 @@ impl MlirEmitter {
                 }
             }
             MirRvalue::UnaryOp { kind, op, operand } => {
-                let operand = self.operand_attr(operand);
+                let operand = self.operand_op(operand, span);
                 unsafe {
-                    (self.api.rvalue_unary_op_attr_get)(
-                        self.context,
+                    (self.api.rvalue_unary_op_create)(
+                        self.location(span),
                         mlir_string(kind),
                         mlir_string(op),
                         operand,
@@ -1248,11 +1243,11 @@ impl MlirEmitter {
             } => {
                 let operands = operands
                     .iter()
-                    .map(|operand| self.operand_attr(operand))
+                    .map(|operand| self.operand_op(operand, span))
                     .collect::<Vec<_>>();
                 unsafe {
-                    (self.api.rvalue_aggregate_attr_get)(
-                        self.context,
+                    (self.api.rvalue_aggregate_create)(
+                        self.location(span),
                         mlir_string(kind),
                         mlir_string(aggregate_kind),
                         operands.len() as isize,
@@ -1261,16 +1256,12 @@ impl MlirEmitter {
                 }
             }
             MirRvalue::Use { operand } => {
-                let operand = self.operand_attr(operand);
-                unsafe { (self.api.rvalue_use_attr_get)(self.context, operand) }
+                let operand = self.operand_op(operand, span);
+                unsafe { (self.api.rvalue_use_create)(self.location(span), operand) }
             }
-            MirRvalue::Unsupported { kind, debug } => self.debug_payload(kind, debug),
-        }
-    }
-
-    fn debug_payload(&self, kind: &str, debug: &str) -> MlirAttribute {
-        unsafe {
-            (self.api.rvalue_debug_attr_get)(self.context, mlir_string(kind), mlir_string(debug))
+            MirRvalue::Unsupported { kind, debug } => {
+                self.debug_op(span, rvalue_op_name(kind), kind, debug)
+            }
         }
     }
 
@@ -1410,6 +1401,27 @@ fn terminator_op_name(kind: &str) -> &'static str {
         "Assert" => "rust.mir.assert",
         "InlineAsm" => "rust.mir.inline_asm",
         _ => "rust.mir.unsupported_terminator",
+    }
+}
+
+fn rvalue_op_name(kind: &str) -> &'static str {
+    match kind {
+        "AddressOf" => "rust.mir.address_of",
+        "Aggregate" => "rust.mir.aggregate",
+        "BinaryOp" => "rust.mir.binary_op",
+        "Cast" => "rust.mir.cast",
+        "CheckedBinaryOp" => "rust.mir.checked_binary_op",
+        "CopyForDeref" => "rust.mir.copy_for_deref",
+        "Discriminant" => "rust.mir.discriminant",
+        "Len" => "rust.mir.len",
+        "Ref" => "rust.mir.ref",
+        "Repeat" => "rust.mir.repeat",
+        "ShallowInitBox" => "rust.mir.shallow_init_box",
+        "ThreadLocalRef" => "rust.mir.thread_local_ref",
+        "NullaryOp" => "rust.mir.nullary_op",
+        "UnaryOp" => "rust.mir.unary_op",
+        "Use" => "rust.mir.use",
+        _ => "rust.mir.unsupported_statement",
     }
 }
 
