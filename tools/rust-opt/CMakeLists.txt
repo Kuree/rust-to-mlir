@@ -8,29 +8,9 @@ add_mlir_tool(rust-opt
 llvm_update_compile_flags(rust-opt)
 target_link_libraries(rust-opt
   PRIVATE
-  RustToLLVMRustMIRDialect
-  RustToLLVMRustMIRTransforms
-  RustToLLVMRustTypedToArith
-  RustToLLVMRustTypedToControlFlow
-  RustToLLVMRustTypedToFunc
-  RustToLLVMRustTypedMemoryToLLVM
-  MLIRArithDialect
-  MLIRArithToLLVM
-  MLIRControlFlowDialect
-  MLIRControlFlowToLLVM
-  MLIRDLTIDialect
-  MLIRFuncDialect
-  MLIRFuncToLLVM
-  MLIRIndexDialect
-  MLIRIndexToLLVM
-  MLIRLLVMDialect
-  MLIRReconcileUnrealizedCasts
-  MLIRTransforms
-  MLIRUBToLLVM
-  MLIRUBDialect
+  RustToLLVMSupport
   MLIRIR
   MLIRMlirOptMain
-  MLIRPass
   MLIRSupport
   LLVMSupport
 )

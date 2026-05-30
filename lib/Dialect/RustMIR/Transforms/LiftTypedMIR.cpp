@@ -1041,4 +1041,9 @@ std::unique_ptr<Pass> mlir::rust::createLiftTypedMIRPass() {
   return std::make_unique<LiftTypedMIRPass>();
 }
 
+std::unique_ptr<Pass>
+mlir::rust::createLiftTypedMIRPass(LiftTypedMIRPassOptions options) {
+  return std::make_unique<LiftTypedMIRPass>(std::move(options));
+}
+
 void mlir::rust::registerRustMIRPasses() { mlir::registerLiftTypedMIRPass(); }

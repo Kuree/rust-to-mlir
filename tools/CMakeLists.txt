@@ -1,4 +1,5 @@
 add_subdirectory(rust-opt)
+add_subdirectory(rust-cpu-runner)
 
 set(RUST_MIR_EXTRACT_BINARY
   ${CMAKE_CURRENT_BINARY_DIR}/rust-mir-extract-target/debug/rust-mir-extract${CMAKE_EXECUTABLE_SUFFIX})

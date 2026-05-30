@@ -13,9 +13,11 @@
 
 namespace mlir {
 class Pass;
+struct LiftTypedMIRPassOptions;
 
 namespace rust {
 std::unique_ptr<Pass> createLiftTypedMIRPass();
+std::unique_ptr<Pass> createLiftTypedMIRPass(LiftTypedMIRPassOptions options);
 void registerRustMIRPasses();
 } // namespace rust
 
