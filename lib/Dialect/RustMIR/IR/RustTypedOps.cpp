@@ -102,6 +102,23 @@ LogicalResult StoreOp::verify() {
   return success();
 }
 
+LogicalResult TypedCallOp::verify() {
+  if (std::optional<StringRef> abi = getAbi()) {
+    if (*abi != "rust" && *abi != "c")
+      return emitOpError("expected abi to be \"rust\" or \"c\"");
+  }
+
+  if (auto cVariadic = getCVariadicAttr()) {
+    if (cVariadic.getValue()) {
+      std::optional<StringRef> abi = getAbi();
+      if (!abi || *abi != "c")
+        return emitOpError("c_variadic calls must use C ABI");
+    }
+  }
+
+  return success();
+}
+
 llvm::SmallVector<MemorySlot> LocalSlotOp::getPromotableSlots() {
   if (isArgumentSlot(*this))
     return {};
@@ -125,8 +142,7 @@ LocalSlotOp::handlePromotionComplete(const MemorySlot &slot, Value defaultValue,
                                      OpBuilder &) {
   if (Operation *defaultOp =
           defaultValue ? defaultValue.getDefiningOp() : nullptr) {
-    if (defaultOp->use_empty() &&
-        defaultOp->getName().getStringRef() == "rust.typed.const")
+    if (defaultOp->use_empty() && isa<TypedConstOp>(defaultOp))
       defaultOp->erase();
   }
 

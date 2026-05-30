@@ -363,22 +363,23 @@ struct CompareOpConversion : public OpConversionPattern<SourceOp> {
                   ConversionPatternRewriter &rewriter) const final {
     if (!this->getTypeConverter()->convertType(op.getResult().getType()))
       return failure();
-    arith::CmpIPredicate predicate =
-        isSignedRustInteger(op.getLhs().getType()) ? signedPredicate
-                                                   : unsignedPredicate;
-    Value replacement = mlir::rust::createOp<arith::CmpIOp>(
-                            rewriter, op.getLoc(), predicate,
-                            adaptor.getLhs(), adaptor.getRhs())
-                            .getResult();
+    arith::CmpIPredicate predicate = isSignedRustInteger(op.getLhs().getType())
+                                         ? signedPredicate
+                                         : unsignedPredicate;
+    Value replacement =
+        mlir::rust::createOp<arith::CmpIOp>(rewriter, op.getLoc(), predicate,
+                                            adaptor.getLhs(), adaptor.getRhs())
+            .getResult();
     rewriter.replaceOp(op, replacement);
     return success();
   }
 };
 
-LogicalResult replaceCheckedAdd(Operation *op, Value lhs, Value rhs,
-                                Type rustLhsType, IntegerType resultType,
+template <typename OpT>
+LogicalResult replaceCheckedAdd(OpT op, Value lhs, Value rhs, Type rustLhsType,
+                                IntegerType resultType,
                                 ConversionPatternRewriter &rewriter) {
-  Location loc = op->getLoc();
+  Location loc = op.getLoc();
   if (!isSignedRustInteger(rustLhsType)) {
     auto extended =
         mlir::rust::createOp<arith::AddUIExtendedOp>(rewriter, loc, lhs, rhs);
@@ -400,14 +401,13 @@ LogicalResult replaceCheckedAdd(Operation *op, Value lhs, Value rhs,
   Value rhsXorValue =
       mlir::rust::createOp<arith::XOrIOp>(rewriter, loc, rhs, value)
           .getResult();
-  Value overflowBits =
-      mlir::rust::createOp<arith::AndIOp>(rewriter, loc, lhsXorValue,
-                                         rhsXorValue)
+  Value overflowBits = mlir::rust::createOp<arith::AndIOp>(
+                           rewriter, loc, lhsXorValue, rhsXorValue)
+                           .getResult();
+  Value overflow =
+      mlir::rust::createOp<arith::CmpIOp>(
+          rewriter, loc, arith::CmpIPredicate::slt, overflowBits, zero)
           .getResult();
-  Value overflow = mlir::rust::createOp<arith::CmpIOp>(
-                       rewriter, loc, arith::CmpIPredicate::slt, overflowBits,
-                       zero)
-                       .getResult();
   createNoOverflowAssert(rewriter, loc, overflow,
                          "attempt to add with overflow");
   SmallVector<Value, 2> replacements{value, overflow};
@@ -415,10 +415,11 @@ LogicalResult replaceCheckedAdd(Operation *op, Value lhs, Value rhs,
   return success();
 }
 
-LogicalResult replaceCheckedSub(Operation *op, Value lhs, Value rhs,
-                                Type rustLhsType, IntegerType resultType,
+template <typename OpT>
+LogicalResult replaceCheckedSub(OpT op, Value lhs, Value rhs, Type rustLhsType,
+                                IntegerType resultType,
                                 ConversionPatternRewriter &rewriter) {
-  Location loc = op->getLoc();
+  Location loc = op.getLoc();
   Value value =
       mlir::rust::createOp<arith::SubIOp>(rewriter, loc, lhs, rhs).getResult();
   Value overflow;
@@ -431,19 +432,16 @@ LogicalResult replaceCheckedSub(Operation *op, Value lhs, Value rhs,
     Value lhsXorValue =
         mlir::rust::createOp<arith::XOrIOp>(rewriter, loc, lhs, value)
             .getResult();
-    Value overflowBits =
-        mlir::rust::createOp<arith::AndIOp>(rewriter, loc, lhsXorRhs,
-                                           lhsXorValue)
-            .getResult();
+    Value overflowBits = mlir::rust::createOp<arith::AndIOp>(
+                             rewriter, loc, lhsXorRhs, lhsXorValue)
+                             .getResult();
     overflow = mlir::rust::createOp<arith::CmpIOp>(
-                   rewriter, loc, arith::CmpIPredicate::slt, overflowBits,
-                   zero)
+                   rewriter, loc, arith::CmpIPredicate::slt, overflowBits, zero)
                    .getResult();
   } else {
-    overflow =
-        mlir::rust::createOp<arith::CmpIOp>(
-            rewriter, loc, arith::CmpIPredicate::ult, lhs, rhs)
-            .getResult();
+    overflow = mlir::rust::createOp<arith::CmpIOp>(
+                   rewriter, loc, arith::CmpIPredicate::ult, lhs, rhs)
+                   .getResult();
   }
 
   createNoOverflowAssert(rewriter, loc, overflow,
@@ -453,26 +451,24 @@ LogicalResult replaceCheckedSub(Operation *op, Value lhs, Value rhs,
   return success();
 }
 
-LogicalResult replaceCheckedMul(Operation *op, Value lhs, Value rhs,
-                                Type rustLhsType, IntegerType resultType,
+template <typename OpT>
+LogicalResult replaceCheckedMul(OpT op, Value lhs, Value rhs, Type rustLhsType,
+                                IntegerType resultType,
                                 ConversionPatternRewriter &rewriter) {
-  Location loc = op->getLoc();
+  Location loc = op.getLoc();
   if (isSignedRustInteger(rustLhsType)) {
     auto extended =
         mlir::rust::createOp<arith::MulSIExtendedOp>(rewriter, loc, lhs, rhs);
-    Value shiftAmount =
-        createIntegerConstant(rewriter, loc, resultType,
-                              llvm::APInt(resultType.getWidth(),
-                                          resultType.getWidth() - 1));
-    Value signFill =
-        mlir::rust::createOp<arith::ShRSIOp>(rewriter, loc, extended.getLow(),
-                                            shiftAmount)
-            .getResult();
-    Value overflow =
-        mlir::rust::createOp<arith::CmpIOp>(
-            rewriter, loc, arith::CmpIPredicate::ne, extended.getHigh(),
-            signFill)
-            .getResult();
+    Value shiftAmount = createIntegerConstant(
+        rewriter, loc, resultType,
+        llvm::APInt(resultType.getWidth(), resultType.getWidth() - 1));
+    Value signFill = mlir::rust::createOp<arith::ShRSIOp>(
+                         rewriter, loc, extended.getLow(), shiftAmount)
+                         .getResult();
+    Value overflow = mlir::rust::createOp<arith::CmpIOp>(
+                         rewriter, loc, arith::CmpIPredicate::ne,
+                         extended.getHigh(), signFill)
+                         .getResult();
     createNoOverflowAssert(rewriter, loc, overflow,
                            "attempt to multiply with overflow");
     SmallVector<Value, 2> replacements{extended.getLow(), overflow};
@@ -484,10 +480,10 @@ LogicalResult replaceCheckedMul(Operation *op, Value lhs, Value rhs,
       mlir::rust::createOp<arith::MulUIExtendedOp>(rewriter, loc, lhs, rhs);
   Value zero = createIntegerConstant(
       rewriter, loc, resultType, llvm::APInt::getZero(resultType.getWidth()));
-  Value overflow =
-      mlir::rust::createOp<arith::CmpIOp>(
-          rewriter, loc, arith::CmpIPredicate::ne, extended.getHigh(), zero)
-          .getResult();
+  Value overflow = mlir::rust::createOp<arith::CmpIOp>(rewriter, loc,
+                                                       arith::CmpIPredicate::ne,
+                                                       extended.getHigh(), zero)
+                       .getResult();
   createNoOverflowAssert(rewriter, loc, overflow,
                          "attempt to multiply with overflow");
   SmallVector<Value, 2> replacements{extended.getLow(), overflow};
@@ -673,8 +669,8 @@ struct FieldConversion : public OpConversionPattern<rustmir::FieldOp> {
       return failure();
     int64_t position = static_cast<int64_t>(op.getIndex());
     Value field = mlir::rust::createOp<LLVM::ExtractValueOp>(
-                      rewriter, op.getLoc(), resultType,
-                      adaptor.getAggregate(), ArrayRef<int64_t>(position))
+                      rewriter, op.getLoc(), resultType, adaptor.getAggregate(),
+                      ArrayRef<int64_t>(position))
                       .getRes();
     rewriter.replaceOp(op, field);
     return success();
@@ -725,6 +721,32 @@ struct TypedAssertConversion
   }
 };
 
+struct TypedCallConversion : public OpConversionPattern<rustmir::TypedCallOp> {
+  using OpConversionPattern<rustmir::TypedCallOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::TypedCallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    SmallVector<Type> resultTypes;
+    if (failed(
+            getTypeConverter()->convertTypes(op.getResultTypes(), resultTypes)))
+      return failure();
+
+    auto converted = mlir::rust::createOp<rustmir::TypedCallOp>(
+        rewriter, op.getLoc(), resultTypes, op.getCalleeAttr(),
+        adaptor.getArgs(), op.getRustNameAttr(), op.getAbiAttr(),
+        op.getCalleeDefAttr(), op.getCalleeTypeAttr(),
+        op.getCalleeGenericArgsAttr(), op.getCalleeInputsAttr(),
+        op.getCalleeOutputAttr(), op.getCVariadicAttr(), op.getTargetAttr(),
+        op.getUnwindAttr(), op.getSpanAttr());
+    for (NamedAttribute attr : op->getAttrs())
+      if (!converted->hasAttr(attr.getName()))
+        converted->setAttr(attr.getName(), attr.getValue());
+    rewriter.replaceOp(op, converted->getResults());
+    return success();
+  }
+};
+
 template <typename OpT>
 void addBinaryOpLegality(ConversionTarget &target,
                          const TypeConverter *typeConverter) {
@@ -745,9 +767,9 @@ struct ConvertRustTypedToArithPass
     : public mlir::impl::ConvertRustTypedToArithPassBase<
           ConvertRustTypedToArithPass> {
   void getDependentDialects(DialectRegistry &registry) const final {
-    registry.insert<arith::ArithDialect, LLVM::LLVMDialect,
-                    cf::ControlFlowDialect, rustmir::RustMIRDialect,
-                    ub::UBDialect>();
+    registry
+        .insert<arith::ArithDialect, LLVM::LLVMDialect, cf::ControlFlowDialect,
+                rustmir::RustMIRDialect, ub::UBDialect>();
   }
 
   void runOnOperation() final {
@@ -832,47 +854,53 @@ struct ConvertRustTypedToArithPass
         [&](rustmir::TypedAssertOp op) {
           return !needsTypeConversion(op.getCond().getType(), typeConverter);
         });
+    target.addDynamicallyLegalOp<rustmir::TypedCallOp>(
+        [&](rustmir::TypedCallOp op) {
+          return llvm::none_of(op.getArgs(),
+                               [&](Value value) {
+                                 return needsTypeConversion(value.getType(),
+                                                            typeConverter);
+                               }) &&
+                 llvm::none_of(op.getResults(), [&](Value value) {
+                   return needsTypeConversion(value.getType(), typeConverter);
+                 });
+        });
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
     RewritePatternSet patterns(context);
-    patterns.add<TypedConstOpConversion,
-                 SimpleBinaryOpConversion<rustmir::AddOp, arith::AddIOp>,
-                 SimpleBinaryOpConversion<rustmir::AddUncheckedOp,
-                                          arith::AddIOp>,
-                 SimpleBinaryOpConversion<rustmir::SubOp, arith::SubIOp>,
-                 SimpleBinaryOpConversion<rustmir::SubUncheckedOp,
-                                          arith::SubIOp>,
-                 SimpleBinaryOpConversion<rustmir::MulOp, arith::MulIOp>,
-                 SimpleBinaryOpConversion<rustmir::MulUncheckedOp,
-                                          arith::MulIOp>,
-                 DivOpConversion<rustmir::DivOp>,
-                 RemOpConversion<rustmir::RemOp>,
-                 SimpleBinaryOpConversion<rustmir::BitAndOp, arith::AndIOp>,
-                 SimpleBinaryOpConversion<rustmir::BitOrOp, arith::OrIOp>,
-                 SimpleBinaryOpConversion<rustmir::BitXorOp, arith::XOrIOp>,
-                 SimpleBinaryOpConversion<rustmir::ShlOp, arith::ShLIOp>,
-                 SimpleBinaryOpConversion<rustmir::ShlUncheckedOp,
-                                          arith::ShLIOp>,
-                 ShrOpConversion<rustmir::ShrOp>,
-                 ShrOpConversion<rustmir::ShrUncheckedOp>,
-                 CompareOpConversion<rustmir::EqOp, arith::CmpIPredicate::eq,
-                                     arith::CmpIPredicate::eq>,
-                 CompareOpConversion<rustmir::NeOp, arith::CmpIPredicate::ne,
-                                     arith::CmpIPredicate::ne>,
-                 CompareOpConversion<rustmir::LtOp, arith::CmpIPredicate::slt,
-                                     arith::CmpIPredicate::ult>,
-                 CompareOpConversion<rustmir::LeOp, arith::CmpIPredicate::sle,
-                                     arith::CmpIPredicate::ule>,
-                 CompareOpConversion<rustmir::GtOp, arith::CmpIPredicate::sgt,
-                                     arith::CmpIPredicate::ugt>,
-                 CompareOpConversion<rustmir::GeOp, arith::CmpIPredicate::sge,
-                                     arith::CmpIPredicate::uge>,
-                 CheckedAddOpConversion, CheckedSubOpConversion,
-                 CheckedMulOpConversion, NegOpConversion, NotOpConversion,
-                 LocalSlotConversion, LoadConversion, StoreConversion,
-                 MakeTupleConversion, FieldConversion, TypedReturnConversion,
-                 TypedSwitchIntConversion, TypedAssertConversion>(
-        typeConverter, context);
+    patterns.add<
+        TypedConstOpConversion,
+        SimpleBinaryOpConversion<rustmir::AddOp, arith::AddIOp>,
+        SimpleBinaryOpConversion<rustmir::AddUncheckedOp, arith::AddIOp>,
+        SimpleBinaryOpConversion<rustmir::SubOp, arith::SubIOp>,
+        SimpleBinaryOpConversion<rustmir::SubUncheckedOp, arith::SubIOp>,
+        SimpleBinaryOpConversion<rustmir::MulOp, arith::MulIOp>,
+        SimpleBinaryOpConversion<rustmir::MulUncheckedOp, arith::MulIOp>,
+        DivOpConversion<rustmir::DivOp>, RemOpConversion<rustmir::RemOp>,
+        SimpleBinaryOpConversion<rustmir::BitAndOp, arith::AndIOp>,
+        SimpleBinaryOpConversion<rustmir::BitOrOp, arith::OrIOp>,
+        SimpleBinaryOpConversion<rustmir::BitXorOp, arith::XOrIOp>,
+        SimpleBinaryOpConversion<rustmir::ShlOp, arith::ShLIOp>,
+        SimpleBinaryOpConversion<rustmir::ShlUncheckedOp, arith::ShLIOp>,
+        ShrOpConversion<rustmir::ShrOp>,
+        ShrOpConversion<rustmir::ShrUncheckedOp>,
+        CompareOpConversion<rustmir::EqOp, arith::CmpIPredicate::eq,
+                            arith::CmpIPredicate::eq>,
+        CompareOpConversion<rustmir::NeOp, arith::CmpIPredicate::ne,
+                            arith::CmpIPredicate::ne>,
+        CompareOpConversion<rustmir::LtOp, arith::CmpIPredicate::slt,
+                            arith::CmpIPredicate::ult>,
+        CompareOpConversion<rustmir::LeOp, arith::CmpIPredicate::sle,
+                            arith::CmpIPredicate::ule>,
+        CompareOpConversion<rustmir::GtOp, arith::CmpIPredicate::sgt,
+                            arith::CmpIPredicate::ugt>,
+        CompareOpConversion<rustmir::GeOp, arith::CmpIPredicate::sge,
+                            arith::CmpIPredicate::uge>,
+        CheckedAddOpConversion, CheckedSubOpConversion, CheckedMulOpConversion,
+        NegOpConversion, NotOpConversion, LocalSlotConversion, LoadConversion,
+        StoreConversion, MakeTupleConversion, FieldConversion,
+        TypedReturnConversion, TypedSwitchIntConversion, TypedAssertConversion,
+        TypedCallConversion>(typeConverter, context);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
   }

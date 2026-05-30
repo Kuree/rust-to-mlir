@@ -77,6 +77,9 @@ MLIR_CAPI_EXPORTED MlirOperation rustMirMoveCreate(MlirLocation location,
 MLIR_CAPI_EXPORTED MlirOperation rustMirConstantI64Create(
     MlirLocation location, int64_t value, MlirStringRef debug,
     MlirStringRef type);
+MLIR_CAPI_EXPORTED MlirOperation rustMirConstantCreate(MlirLocation location,
+                                                       MlirStringRef debug,
+                                                       MlirStringRef type);
 MLIR_CAPI_EXPORTED MlirOperation rustMirOperandDebugCreate(
     MlirLocation location, MlirStringRef kind, MlirStringRef debug);
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueBinaryOpCreate(
@@ -101,6 +104,13 @@ MLIR_CAPI_EXPORTED MlirOperation rustMirSwitchIntCreate(
 MLIR_CAPI_EXPORTED MlirOperation rustMirAssertCreate(
     MlirLocation location, MlirOperation cond, bool expected, int64_t target,
     MlirStringRef debug);
+MLIR_CAPI_EXPORTED MlirOperation rustMirCallCreate(
+    MlirLocation location, MlirOperation func, MlirOperation destination,
+    bool hasTarget, int64_t target, MlirStringRef unwind, intptr_t numArgs,
+    MlirOperation const *args, MlirStringRef debug, MlirStringRef calleeName,
+    MlirStringRef calleeDef, MlirStringRef calleeType,
+    MlirStringRef calleeGenericArgs, MlirStringRef calleeInputs,
+    MlirStringRef calleeOutput, MlirStringRef calleeAbi, bool calleeCVariadic);
 MLIR_CAPI_EXPORTED MlirOperation rustMirTargetTerminatorCreate(
     MlirLocation location, MlirStringRef opName, MlirStringRef kind,
     int64_t target, MlirStringRef debug);

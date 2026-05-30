@@ -166,13 +166,28 @@ def Rust_DropOp : Rust_Op<"drop"> {
                        OptionalAttr<StrAttr>:$span);
   let assemblyFormat = "attr-dict";
 }
-def Rust_CallOp : Rust_Op<"call"> {
+def Rust_CallOp : Rust_Op<"call", [NoTerminator, SingleBlock]> {
   let summary = "MIR TerminatorKind::Call";
-  let arguments = (ins I64Attr:$target,
+  let description = [{
+    The body contains the callee operand, the destination place, then each call
+    argument operand in MIR order.
+  }];
+  let arguments = (ins OptionalAttr<I64Attr>:$target,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$debug,
+                       OptionalAttr<StrAttr>:$unwind,
+                       OptionalAttr<StrAttr>:$callee_name,
+                       OptionalAttr<StrAttr>:$callee_def,
+                       OptionalAttr<StrAttr>:$callee_type,
+                       OptionalAttr<StrAttr>:$callee_generic_args,
+                       OptionalAttr<StrAttr>:$callee_inputs,
+                       OptionalAttr<StrAttr>:$callee_output,
+                       OptionalAttr<StrAttr>:$callee_abi,
+                       OptionalAttr<BoolAttr>:$callee_c_variadic,
                        OptionalAttr<StrAttr>:$span);
-  let assemblyFormat = "attr-dict";
+  let regions = (region SizedRegion<1>:$body);
+  let hasVerifier = 1;
+  let assemblyFormat = "attr-dict-with-keyword $body";
 }
 def Rust_AssertOp : Rust_Op<"assert", [NoTerminator, SingleBlock]> {
   let summary = "MIR TerminatorKind::Assert";

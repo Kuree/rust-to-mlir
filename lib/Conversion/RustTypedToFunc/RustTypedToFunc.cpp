@@ -9,6 +9,7 @@
 #include "RustToLLVM/Support/OpCreateCompat.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/RustMIR/IR/RustMIRDialect.h"
+#include "mlir/Dialect/RustMIR/IR/RustTypes.h"
 #include "mlir/Dialect/RustTyped/IR/RustTypedOps.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/IRMapping.h"
@@ -46,6 +47,11 @@ bool isArgumentSlot(rust::mir::LocalSlotOp op) {
   if (std::optional<llvm::StringRef> role = op.getRole())
     return *role == "arg";
   return false;
+}
+
+bool isUnusedUnitSlot(rust::mir::LocalSlotOp op) {
+  return op.getSlot().use_empty() &&
+         isa<rust::mir::UnitType>(op.getSlot().getType().getElementType());
 }
 
 SmallVector<rust::mir::LocalSlotOp>
@@ -129,6 +135,9 @@ struct TypedFuncOpConversion
                                                operands);
           continue;
         }
+        if (auto slot = dyn_cast<rust::mir::LocalSlotOp>(op))
+          if (!isArgumentSlot(slot) && isUnusedUnitSlot(slot))
+            continue;
         Operation *cloned = rewriter.clone(op, mapping);
         auto clonedSlot = dyn_cast<rust::mir::LocalSlotOp>(cloned);
         if (!clonedSlot || !isArgumentSlot(clonedSlot))

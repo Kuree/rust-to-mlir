@@ -9,6 +9,7 @@ add_mlir_conversion_library(RustToLLVMRustTypedToControlFlow
   MLIRControlFlowDialect
   MLIRFuncDialect
   MLIRIR
+  MLIRLLVMDialect
   MLIRPass
   MLIRSupport
   MLIRTransformUtils

@@ -10,7 +10,7 @@ use rustc_public::mir::{
     AggregateKind, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, TerminatorKind,
 };
 use rustc_public::target::{Endian, MachineInfo};
-use rustc_public::ty::{ConstantKind, RigidTy, Ty, TyKind};
+use rustc_public::ty::{Abi, ConstantKind, RigidTy, Ty, TyKind};
 use rustc_public::CrateItem;
 use std::env;
 use std::ffi::{CStr, CString};
@@ -111,6 +111,8 @@ type RustMirCopyCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> Ml
 type RustMirMoveCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
 type RustMirConstantI64Create =
     unsafe extern "C" fn(MlirLocation, i64, MlirStringRef, MlirStringRef) -> MlirOperation;
+type RustMirConstantCreate =
+    unsafe extern "C" fn(MlirLocation, MlirStringRef, MlirStringRef) -> MlirOperation;
 type RustMirOperandDebugCreate =
     unsafe extern "C" fn(MlirLocation, MlirStringRef, MlirStringRef) -> MlirOperation;
 type RustMirRvalueBinaryOpCreate = unsafe extern "C" fn(
@@ -149,6 +151,25 @@ type RustMirSwitchIntCreate = unsafe extern "C" fn(
 ) -> MlirOperation;
 type RustMirAssertCreate =
     unsafe extern "C" fn(MlirLocation, MlirOperation, bool, i64, MlirStringRef) -> MlirOperation;
+type RustMirCallCreate = unsafe extern "C" fn(
+    MlirLocation,
+    MlirOperation,
+    MlirOperation,
+    bool,
+    i64,
+    MlirStringRef,
+    isize,
+    *const MlirOperation,
+    MlirStringRef,
+    MlirStringRef,
+    MlirStringRef,
+    MlirStringRef,
+    MlirStringRef,
+    MlirStringRef,
+    MlirStringRef,
+    MlirStringRef,
+    bool,
+) -> MlirOperation;
 type RustMirTargetTerminatorCreate = unsafe extern "C" fn(
     MlirLocation,
     MlirStringRef,
@@ -203,6 +224,7 @@ struct MlirApi {
     copy_create: RustMirCopyCreate,
     move_create: RustMirMoveCreate,
     constant_i64_create: RustMirConstantI64Create,
+    constant_create: RustMirConstantCreate,
     operand_debug_create: RustMirOperandDebugCreate,
     rvalue_binary_op_create: RustMirRvalueBinaryOpCreate,
     rvalue_unary_op_create: RustMirRvalueUnaryOpCreate,
@@ -212,6 +234,7 @@ struct MlirApi {
     goto_create: RustMirGotoCreate,
     switch_int_create: RustMirSwitchIntCreate,
     assert_create: RustMirAssertCreate,
+    call_create: RustMirCallCreate,
     target_terminator_create: RustMirTargetTerminatorCreate,
     func_create: RustMirFuncCreate,
     block_create: RustMirBlockCreate,
@@ -265,6 +288,7 @@ impl MlirApi {
                 copy_create: load_symbol(handle, "rustMirCopyCreate")?,
                 move_create: load_symbol(handle, "rustMirMoveCreate")?,
                 constant_i64_create: load_symbol(handle, "rustMirConstantI64Create")?,
+                constant_create: load_symbol(handle, "rustMirConstantCreate")?,
                 operand_debug_create: load_symbol(handle, "rustMirOperandDebugCreate")?,
                 rvalue_binary_op_create: load_symbol(handle, "rustMirRvalueBinaryOpCreate")?,
                 rvalue_unary_op_create: load_symbol(handle, "rustMirRvalueUnaryOpCreate")?,
@@ -274,6 +298,7 @@ impl MlirApi {
                 goto_create: load_symbol(handle, "rustMirGotoCreate")?,
                 switch_int_create: load_symbol(handle, "rustMirSwitchIntCreate")?,
                 assert_create: load_symbol(handle, "rustMirAssertCreate")?,
+                call_create: load_symbol(handle, "rustMirCallCreate")?,
                 target_terminator_create: load_symbol(handle, "rustMirTargetTerminatorCreate")?,
                 func_create: load_symbol(handle, "rustMirFuncCreate")?,
                 block_create: load_symbol(handle, "rustMirBlockCreate")?,
@@ -323,6 +348,16 @@ fn mlir_string(text: &str) -> MlirStringRef {
     MlirStringRef {
         data: text.as_ptr() as *const c_char,
         length: text.len() as isize,
+    }
+}
+
+fn mlir_optional_string(text: Option<&str>) -> MlirStringRef {
+    match text {
+        Some(text) => mlir_string(text),
+        None => MlirStringRef {
+            data: std::ptr::null(),
+            length: 0,
+        },
     }
 }
 
@@ -463,6 +498,16 @@ enum MirTerminator {
         target: usize,
         debug: String,
     },
+    Call {
+        span: String,
+        func: MirOperand,
+        args: Vec<MirOperand>,
+        destination: MirPlace,
+        target: Option<usize>,
+        unwind: String,
+        metadata: Option<MirCallMetadata>,
+        debug: String,
+    },
     Target {
         span: String,
         kind: String,
@@ -528,6 +573,49 @@ struct MirConstant {
     ty: String,
     debug: String,
     value: Option<i64>,
+}
+
+#[derive(Clone)]
+struct MirCallMetadata {
+    name: String,
+    def: String,
+    ty: String,
+    generic_args: String,
+    inputs: String,
+    output: String,
+    abi: String,
+    c_variadic: bool,
+}
+
+impl MirCallMetadata {
+    fn from_operand(operand: &Operand) -> Option<Self> {
+        let Operand::Constant(constant) = operand else {
+            return None;
+        };
+
+        let ty = constant.const_.ty();
+        let kind = ty.kind();
+        let (def, generic_args) = kind.fn_def()?;
+        let sig = kind.fn_sig()?;
+        let value = &sig.value;
+        let inputs = value
+            .inputs()
+            .iter()
+            .map(|ty| format!("{ty:?}"))
+            .collect::<Vec<_>>()
+            .join(", ");
+
+        Some(Self {
+            name: def.name().to_string(),
+            def: format!("{def:?}"),
+            ty: format!("{ty:?}"),
+            generic_args: format!("{generic_args:?}"),
+            inputs,
+            output: format!("{:?}", value.output()),
+            abi: normalize_abi(&value.abi),
+            c_variadic: value.c_variadic,
+        })
+    }
 }
 
 enum MirRvalue {
@@ -728,18 +816,21 @@ impl MirTerminator {
                 }
             }
             TerminatorKind::Call {
-                target: Some(target),
-                ..
-            } => {
-                let debug = format!("{terminator:?}");
-                Self::Target {
-                    span,
-                    kind: "Call".to_string(),
-                    target: *target,
-                    debug,
-                    op_name: "rust.mir.call",
-                }
-            }
+                func,
+                args,
+                destination,
+                target,
+                unwind,
+            } => Self::Call {
+                span,
+                func: MirOperand::from_public(func),
+                args: args.iter().map(MirOperand::from_public).collect(),
+                destination: MirPlace::from_public(destination),
+                target: *target,
+                unwind: format!("{unwind:?}"),
+                metadata: MirCallMetadata::from_operand(func),
+                debug: format!("{terminator:?}"),
+            },
             TerminatorKind::InlineAsm {
                 destination: Some(target),
                 ..
@@ -1073,6 +1164,63 @@ impl MlirEmitter {
                     )
                 }
             }
+            MirTerminator::Call {
+                span,
+                func,
+                args,
+                destination,
+                target,
+                unwind,
+                metadata,
+                debug,
+            } => {
+                let func = self.operand_op(func, span);
+                let destination = self.place_op(destination, span);
+                let args = args
+                    .iter()
+                    .map(|arg| self.operand_op(arg, span))
+                    .collect::<Vec<_>>();
+                unsafe {
+                    (self.api.call_create)(
+                        self.location(span),
+                        func,
+                        destination,
+                        target.is_some(),
+                        target.unwrap_or(0) as i64,
+                        mlir_string(unwind),
+                        args.len() as isize,
+                        args.as_ptr(),
+                        mlir_string(debug),
+                        mlir_optional_string(
+                            metadata.as_ref().map(|metadata| metadata.name.as_str()),
+                        ),
+                        mlir_optional_string(
+                            metadata.as_ref().map(|metadata| metadata.def.as_str()),
+                        ),
+                        mlir_optional_string(
+                            metadata.as_ref().map(|metadata| metadata.ty.as_str()),
+                        ),
+                        mlir_optional_string(
+                            metadata
+                                .as_ref()
+                                .map(|metadata| metadata.generic_args.as_str()),
+                        ),
+                        mlir_optional_string(
+                            metadata.as_ref().map(|metadata| metadata.inputs.as_str()),
+                        ),
+                        mlir_optional_string(
+                            metadata.as_ref().map(|metadata| metadata.output.as_str()),
+                        ),
+                        mlir_optional_string(
+                            metadata.as_ref().map(|metadata| metadata.abi.as_str()),
+                        ),
+                        metadata
+                            .as_ref()
+                            .map(|metadata| metadata.c_variadic)
+                            .unwrap_or(false),
+                    )
+                }
+            }
             MirTerminator::Target {
                 span,
                 kind,
@@ -1192,10 +1340,10 @@ impl MlirEmitter {
                     }
                 } else {
                     unsafe {
-                        (self.api.operand_debug_create)(
+                        (self.api.constant_create)(
                             self.location(span),
-                            mlir_string("Constant"),
                             mlir_string(&constant.debug),
+                            mlir_string(&constant.ty),
                         )
                     }
                 }
@@ -1332,6 +1480,14 @@ fn variant_name(debug: &str) -> &str {
         .find(|c: char| c == '(' || c == '{' || c.is_whitespace())
         .unwrap_or(debug.len());
     &debug[..end]
+}
+
+fn normalize_abi(abi: &Abi) -> String {
+    match abi {
+        Abi::Rust => "rust".to_string(),
+        Abi::C { .. } => "c".to_string(),
+        _ => format!("{abi:?}"),
+    }
 }
 
 fn aggregate_kind_name(kind: &AggregateKind) -> &str {

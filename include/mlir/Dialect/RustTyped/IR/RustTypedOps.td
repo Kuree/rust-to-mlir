@@ -173,6 +173,28 @@ def RustTyped_TypedAssertOp : RustTyped_Op<"assert"> {
   let assemblyFormat = "$cond attr-dict `:` type($cond)";
 }
 
+def RustTyped_TypedCallOp : RustTyped_Op<"call"> {
+  let summary = "Typed Rust MIR direct call";
+  let arguments = (ins FlatSymbolRefAttr:$callee,
+                       Variadic<AnyType>:$args,
+                       OptionalAttr<StrAttr>:$rust_name,
+                       OptionalAttr<StrAttr>:$abi,
+                       OptionalAttr<StrAttr>:$callee_def,
+                       OptionalAttr<StrAttr>:$callee_type,
+                       OptionalAttr<StrAttr>:$callee_generic_args,
+                       OptionalAttr<StrAttr>:$callee_inputs,
+                       OptionalAttr<StrAttr>:$callee_output,
+                       OptionalAttr<BoolAttr>:$c_variadic,
+                       OptionalAttr<I64Attr>:$target,
+                       OptionalAttr<StrAttr>:$unwind,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs Variadic<AnyType>:$results);
+  let hasVerifier = 1;
+  let assemblyFormat = [{
+    $callee `(` $args `)` attr-dict `:` functional-type($args, results)
+  }];
+}
+
 def RustTyped_TypedReturnOp : RustTyped_Op<"return"> {
   let summary = "Typed Rust MIR return";
   let arguments = (ins Variadic<AnyType>:$values, OptionalAttr<StrAttr>:$span);

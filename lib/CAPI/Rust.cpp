@@ -20,9 +20,9 @@
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OperationSupport.h"
-#include "mlir/Parser/Parser.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
+#include "mlir/Parser/Parser.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -332,8 +332,7 @@ bool rustMlirMergeTextModulesToFile(intptr_t numInputs,
   MLIRContext context;
   context.loadDialect<rustmir::RustMIRDialect, DLTIDialect>();
 
-  OwningOpRef<ModuleOp> merged =
-      ModuleOp::create(UnknownLoc::get(&context));
+  OwningOpRef<ModuleOp> merged = ModuleOp::create(UnknownLoc::get(&context));
   bool copiedModuleAttrs = false;
   for (intptr_t i = 0; i < numInputs; ++i) {
     OwningOpRef<ModuleOp> input =
@@ -466,8 +465,7 @@ MlirOperation rustMirProjectionCreate(MlirLocation location, MlirStringRef kind,
   return createOperation(state);
 }
 
-MlirOperation rustMirProjectionFieldCreate(MlirLocation location,
-                                           int64_t index,
+MlirOperation rustMirProjectionFieldCreate(MlirLocation location, int64_t index,
                                            MlirStringRef type) {
   MLIRContext *context = unwrap(location).getContext();
   Builder builder(context);
@@ -505,17 +503,29 @@ MlirOperation rustMirMoveCreate(MlirLocation location, MlirOperation place) {
   return wrapped;
 }
 
-MlirOperation rustMirConstantI64Create(MlirLocation location, int64_t value,
-                                       MlirStringRef debug,
-                                       MlirStringRef type) {
+MlirOperation createConstantOperation(MlirLocation location,
+                                      std::optional<int64_t> value,
+                                      MlirStringRef debug, MlirStringRef type) {
   MLIRContext *context = unwrap(location).getContext();
   Builder builder(context);
   OperationState state(unwrap(location), "rust.mir.constant");
-  state.addAttribute("value", builder.getI64IntegerAttr(value));
+  if (value)
+    state.addAttribute("value", builder.getI64IntegerAttr(*value));
   addStringAttr(context, state, "debug", debug);
   addStringAttr(context, state, "ty", type);
   state.addAttribute("mir_kind", builder.getStringAttr("Constant"));
   return createOperation(state);
+}
+
+MlirOperation rustMirConstantI64Create(MlirLocation location, int64_t value,
+                                       MlirStringRef debug,
+                                       MlirStringRef type) {
+  return createConstantOperation(location, value, debug, type);
+}
+
+MlirOperation rustMirConstantCreate(MlirLocation location, MlirStringRef debug,
+                                    MlirStringRef type) {
+  return createConstantOperation(location, std::nullopt, debug, type);
 }
 
 MlirOperation rustMirOperandDebugCreate(MlirLocation location,
@@ -628,10 +638,42 @@ MlirOperation rustMirAssertCreate(MlirLocation location, MlirOperation cond,
   return wrapped;
 }
 
+MlirOperation rustMirCallCreate(
+    MlirLocation location, MlirOperation func, MlirOperation destination,
+    bool hasTarget, int64_t target, MlirStringRef unwind, intptr_t numArgs,
+    MlirOperation const *args, MlirStringRef debug, MlirStringRef calleeName,
+    MlirStringRef calleeDef, MlirStringRef calleeType,
+    MlirStringRef calleeGenericArgs, MlirStringRef calleeInputs,
+    MlirStringRef calleeOutput, MlirStringRef calleeAbi, bool calleeCVariadic) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.call");
+  if (hasTarget)
+    state.addAttribute("target", builder.getI64IntegerAttr(target));
+  state.addAttribute("mir_kind", builder.getStringAttr("Call"));
+  addStringAttr(context, state, "debug", debug);
+  addStringAttr(context, state, "unwind", unwind);
+  addStringAttr(context, state, "callee_name", calleeName);
+  addStringAttr(context, state, "callee_def", calleeDef);
+  addStringAttr(context, state, "callee_type", calleeType);
+  addStringAttr(context, state, "callee_generic_args", calleeGenericArgs);
+  addStringAttr(context, state, "callee_inputs", calleeInputs);
+  addStringAttr(context, state, "callee_output", calleeOutput);
+  addStringAttr(context, state, "callee_abi", calleeAbi);
+  if (calleeAbi.data || calleeAbi.length != 0)
+    state.addAttribute("callee_c_variadic",
+                       builder.getBoolAttr(calleeCVariadic));
+  MlirOperation wrapped = createRegionOperation(state);
+  Operation *op = unwrap(wrapped);
+  appendOwnedChild(op, func);
+  appendOwnedChild(op, destination);
+  appendOwnedChildren(op, numArgs, args);
+  return wrapped;
+}
+
 MlirOperation rustMirTargetTerminatorCreate(MlirLocation location,
                                             MlirStringRef opName,
-                                            MlirStringRef kind,
-                                            int64_t target,
+                                            MlirStringRef kind, int64_t target,
                                             MlirStringRef debug) {
   MLIRContext *context = unwrap(location).getContext();
   Builder builder(context);

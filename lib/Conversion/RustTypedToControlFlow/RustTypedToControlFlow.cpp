@@ -9,10 +9,13 @@
 #include "RustToLLVM/Support/OpCreateCompat.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
+#include "mlir/Dialect/LLVMIR/LLVMAttrs.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/RustMIR/IR/RustMIRDialect.h"
 #include "mlir/Dialect/RustTyped/IR/RustTypedOps.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/DenseMap.h"
@@ -67,6 +70,64 @@ collectTopLevelTypedBlocks(func::FuncOp func) {
     if (auto typedBlock = dyn_cast<rust::mir::TypedBlockOp>(op))
       typedBlocks.push_back(typedBlock);
   return typedBlocks;
+}
+
+void addRustCallAttrs(rust::mir::TypedCallOp from, Operation *to) {
+  if (auto attr = from.getRustNameAttr())
+    to->setAttr("rust.rust_name", attr);
+  if (auto attr = from.getAbiAttr())
+    to->setAttr("rust.abi", attr);
+  if (auto attr = from.getSpanAttr())
+    to->setAttr("rust.span", attr);
+  if (auto attr = from.getCalleeDefAttr())
+    to->setAttr("rust.callee_def", attr);
+  if (auto attr = from.getCalleeTypeAttr())
+    to->setAttr("rust.callee_type", attr);
+  if (auto attr = from.getCalleeGenericArgsAttr())
+    to->setAttr("rust.callee_generic_args", attr);
+  if (auto attr = from.getCalleeInputsAttr())
+    to->setAttr("rust.callee_inputs", attr);
+  if (auto attr = from.getCalleeOutputAttr())
+    to->setAttr("rust.callee_output", attr);
+  if (auto attr = from.getUnwindAttr())
+    to->setAttr("rust.unwind", attr);
+  if (auto attr = from.getTargetAttr())
+    to->setAttr("rust.target", attr);
+  if (auto attr = from.getCVariadicAttr())
+    to->setAttr("rust.c_variadic", attr);
+}
+
+void setExternalLLVMLinkage(func::FuncOp op) {
+  op->setAttr("llvm.linkage",
+              LLVM::LinkageAttr::get(op.getContext(),
+                                     LLVM::linkage::Linkage::External));
+}
+
+LogicalResult ensureFuncDeclaration(ModuleOp module,
+                                    rust::mir::TypedCallOp call,
+                                    PatternRewriter &rewriter) {
+  StringRef callee = call.getCallee();
+  FunctionType expectedType =
+      rewriter.getFunctionType(call.getOperandTypes(), call.getResultTypes());
+  if (Operation *symbol = SymbolTable::lookupSymbolIn(module, callee)) {
+    auto func = dyn_cast<func::FuncOp>(symbol);
+    if (!func)
+      return call.emitError("callee symbol is not a func.func: ") << callee;
+    if (func.getFunctionType() != expectedType)
+      return call.emitError("callee function type mismatch for ")
+             << callee << ", expected " << expectedType << ", got "
+             << func.getFunctionType();
+    return success();
+  }
+
+  OpBuilder::InsertionGuard guard(rewriter);
+  rewriter.setInsertionPointToStart(module.getBody());
+  auto decl = mlir::rust::createOp<func::FuncOp>(rewriter, call.getLoc(),
+                                                 callee, expectedType);
+  decl.setPrivate();
+  setExternalLLVMLinkage(decl);
+  addRustCallAttrs(call, decl.getOperation());
+  return success();
 }
 
 LogicalResult
@@ -299,23 +360,49 @@ struct TypedAssertConversion
   }
 };
 
+struct TypedCallConversion
+    : public OpConversionPattern<rust::mir::TypedCallOp> {
+  using OpConversionPattern<rust::mir::TypedCallOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rust::mir::TypedCallOp call, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    ModuleOp module = call->getParentOfType<ModuleOp>();
+    if (!module)
+      return call.emitError("expected parent module for rust.typed.call");
+    if (failed(ensureFuncDeclaration(module, call, rewriter)))
+      return failure();
+
+    auto funcCall = rewriter.replaceOpWithNewOp<func::CallOp>(
+        call, call.getCalleeAttr(), call.getResultTypes(), adaptor.getArgs());
+    addRustCallAttrs(call, funcCall.getOperation());
+    return success();
+  }
+};
+
 struct ConvertRustTypedToControlFlowPass
     : public mlir::impl::ConvertRustTypedToControlFlowPassBase<
           ConvertRustTypedToControlFlowPass> {
+  void getDependentDialects(DialectRegistry &registry) const final {
+    registry.insert<cf::ControlFlowDialect, func::FuncDialect,
+                    LLVM::LLVMDialect, rust::mir::RustMIRDialect>();
+  }
+
   void runOnOperation() final {
     ModuleOp module = getOperation();
     MLIRContext *context = module.getContext();
     ConversionTarget target(*context);
     target.addLegalDialect<cf::ControlFlowDialect, func::FuncDialect,
-                           rust::mir::RustMIRDialect>();
-    target
-        .addIllegalOp<rust::mir::TypedBlockOp, rust::mir::TypedGotoOp,
-                      rust::mir::TypedReturnOp, rust::mir::TypedSwitchIntOp,
-                      rust::mir::TypedAssertOp>();
+                           LLVM::LLVMDialect, rust::mir::RustMIRDialect>();
+    target.addIllegalOp<rust::mir::TypedBlockOp, rust::mir::TypedGotoOp,
+                        rust::mir::TypedReturnOp, rust::mir::TypedSwitchIntOp,
+                        rust::mir::TypedAssertOp, rust::mir::TypedCallOp>();
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
     RewritePatternSet patterns(context);
-    patterns.add<TypedBlockConversion, TypedAssertConversion>(context);
+    patterns
+        .add<TypedBlockConversion, TypedAssertConversion, TypedCallConversion>(
+            context);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
   }
