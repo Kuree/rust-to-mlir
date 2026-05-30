@@ -18,6 +18,8 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/STLExtras.h"
 
+#include <limits>
+
 namespace mlir {
 #define GEN_PASS_DEF_CONVERTRUSTTYPEDMEMORYTOLLVMPASS
 #include "mlir/Conversion/RustTypedMemoryToLLVM/RustTypedMemoryToLLVMPasses.h.inc"
@@ -33,6 +35,9 @@ public:
       : context(context) {
     addConversion([](Type type) { return type; });
     addConversion([this](rustmir::SlotType) -> Type {
+      return LLVM::LLVMPointerType::get(this->context);
+    });
+    addConversion([this](rustmir::TypedAddrType) -> Type {
       return LLVM::LLVMPointerType::get(this->context);
     });
     addConversion([this](rustmir::TypedRefType) -> Type {
@@ -75,6 +80,14 @@ bool hasTypeConversion(TypeRange types, const TypeConverter &converter) {
       types, [&](Type type) { return needsTypeConversion(type, converter); });
 }
 
+Type getAddressElementType(Type addressType) {
+  if (auto slotType = dyn_cast<rustmir::SlotType>(addressType))
+    return slotType.getElementType();
+  if (auto addrType = dyn_cast<rustmir::TypedAddrType>(addressType))
+    return addrType.getElementType();
+  return {};
+}
+
 Value createI64One(OpBuilder &builder, Location loc) {
   return mlir::rust::createOp<LLVM::ConstantOp>(builder, loc,
                                                 builder.getI64Type(), 1)
@@ -98,6 +111,36 @@ struct LocalSlotOpConversion
     auto alloca = mlir::rust::createOp<LLVM::AllocaOp>(
         rewriter, op.getLoc(), ptrType, elementType, arraySize);
     rewriter.replaceOp(op, alloca.getRes());
+    return success();
+  }
+};
+
+struct FieldAddrOpConversion
+    : public OpConversionPattern<rustmir::FieldAddrOp> {
+  using OpConversionPattern<rustmir::FieldAddrOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::FieldAddrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type baseElementType = getAddressElementType(op.getBase().getType());
+    Type convertedBaseElementType =
+        getTypeConverter()->convertType(baseElementType);
+    Type resultType =
+        getTypeConverter()->convertType(op.getAddress().getType());
+    if (!convertedBaseElementType || !resultType)
+      return failure();
+
+    int64_t fieldIndex = static_cast<int64_t>(op.getIndex());
+    if (fieldIndex < 0 || fieldIndex > std::numeric_limits<int32_t>::max())
+      return op.emitError("field index cannot be represented as a GEP index");
+
+    SmallVector<LLVM::GEPArg> indices = {
+        LLVM::GEPArg(0), LLVM::GEPArg(static_cast<int32_t>(fieldIndex))};
+    Value gep = mlir::rust::createOp<LLVM::GEPOp>(
+                    rewriter, op.getLoc(), resultType, convertedBaseElementType,
+                    adaptor.getBase(), indices)
+                    .getRes();
+    rewriter.replaceOp(op, gep);
     return success();
   }
 };
@@ -173,7 +216,8 @@ struct ConvertRustTypedMemoryToLLVMPass
     target.addLegalDialect<func::FuncDialect, LLVM::LLVMDialect,
                            rustmir::RustMIRDialect>();
     target.addIllegalOp<rustmir::LocalSlotOp, rustmir::LoadOp, rustmir::StoreOp,
-                        rustmir::BorrowOp, rustmir::RawAddressOp>();
+                        rustmir::FieldAddrOp, rustmir::BorrowOp,
+                        rustmir::RawAddressOp>();
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return !hasTypeConversion(op.getFunctionType().getInputs(),
                                 typeConverter) &&
@@ -190,9 +234,10 @@ struct ConvertRustTypedMemoryToLLVMPass
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
     RewritePatternSet patterns(context);
-    patterns.add<LocalSlotOpConversion, LoadOpConversion, StoreOpConversion,
-                 BorrowOpConversion, RawAddressOpConversion>(typeConverter,
-                                                             context);
+    patterns
+        .add<LocalSlotOpConversion, LoadOpConversion, StoreOpConversion,
+             FieldAddrOpConversion, BorrowOpConversion, RawAddressOpConversion>(
+            typeConverter, context);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
         patterns, typeConverter);
     populateCallOpTypeConversionPattern(patterns, typeConverter);

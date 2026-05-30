@@ -20,3 +20,27 @@
 // CHECK-SAME: -> !rust.typed.rawptr<"const", !rust.mir.int<"i32">>
 // CHECK: rust.typed.call @consume_raw
 // CHECK-SAME: (!rust.typed.rawptr<"const", !rust.mir.int<"i32">>) -> ()
+
+// CHECK-LABEL: rust.typed.func @"references::borrow_tuple_field_typed"
+// CHECK: rust.typed.local_slot {{.*}}address_taken = true
+// CHECK-SAME: !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i32">>
+// CHECK: %[[FIELD:.*]] = rust.typed.field_addr
+// CHECK-SAME: index = 1 : i64
+// CHECK-SAME: -> <!rust.mir.int<"i32">>
+// CHECK: rust.typed.borrow %[[FIELD]]
+// CHECK-SAME: !rust.typed.addr<!rust.mir.int<"i32">>
+// CHECK-SAME: -> !rust.typed.ref<"shared", !rust.mir.int<"i32">>
+// CHECK: rust.typed.call @consume_ref
+// CHECK-SAME: (!rust.typed.ref<"shared", !rust.mir.int<"i32">>) -> ()
+
+// CHECK-LABEL: rust.typed.func @"references::raw_ptr_tuple_field_typed"
+// CHECK: rust.typed.local_slot {{.*}}address_taken = true
+// CHECK-SAME: !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i32">>
+// CHECK: %[[RAW_FIELD:.*]] = rust.typed.field_addr
+// CHECK-SAME: index = 1 : i64
+// CHECK-SAME: -> <!rust.mir.int<"i32">>
+// CHECK: rust.typed.address_of %[[RAW_FIELD]]
+// CHECK-SAME: !rust.typed.addr<!rust.mir.int<"i32">>
+// CHECK-SAME: -> !rust.typed.rawptr<"const", !rust.mir.int<"i32">>
+// CHECK: rust.typed.call @consume_raw
+// CHECK-SAME: (!rust.typed.rawptr<"const", !rust.mir.int<"i32">>) -> ()

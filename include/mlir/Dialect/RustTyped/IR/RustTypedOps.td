@@ -153,9 +153,18 @@ def RustTyped_FieldOp : RustTyped_Op<"field"> {
   let assemblyFormat = "$aggregate attr-dict `:` type($aggregate) `->` type($result)";
 }
 
+def RustTyped_FieldAddrOp : RustTyped_Op<"field_addr"> {
+  let summary = "Compute the address of a typed Rust indexed aggregate element";
+  let arguments = (ins AnyType:$base, I64Attr:$index,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs RustTyped_AddrType:$address);
+  let assemblyFormat = "$base attr-dict `:` type($base) `->` type($address)";
+  let hasVerifier = 1;
+}
+
 def RustTyped_BorrowOp : RustTyped_Op<"borrow"> {
-  let summary = "Create a typed Rust reference to a local slot";
-  let arguments = (ins RustTyped_SlotType:$slot,
+  let summary = "Create a typed Rust reference to a place address";
+  let arguments = (ins AnyType:$slot,
                        StrAttr:$borrow_kind,
                        StrAttr:$mutability,
                        OptionalAttr<StrAttr>:$rust_region,
@@ -166,8 +175,8 @@ def RustTyped_BorrowOp : RustTyped_Op<"borrow"> {
 }
 
 def RustTyped_RawAddressOp : RustTyped_Op<"address_of"> {
-  let summary = "Create a typed Rust raw pointer to a local slot";
-  let arguments = (ins RustTyped_SlotType:$slot,
+  let summary = "Create a typed Rust raw pointer to a place address";
+  let arguments = (ins AnyType:$slot,
                        StrAttr:$raw_ptr_kind,
                        StrAttr:$mutability,
                        OptionalAttr<StrAttr>:$span);

@@ -22,6 +22,12 @@ def RustTyped_SlotType : RustTyped_Type<"Slot", "slot"> {
   let assemblyFormat = "`<` $elementType `>`";
 }
 
+def RustTyped_AddrType : RustTyped_Type<"TypedAddr", "addr"> {
+  let summary = "Compiler-internal address of a typed Rust place";
+  let parameters = (ins "Type":$elementType);
+  let assemblyFormat = "`<` $elementType `>`";
+}
+
 def RustTyped_TupleType : RustTyped_Type<"TypedTuple", "tuple",
     [DeclareTypeInterfaceMethods<DestructurableTypeInterface>]> {
   let summary = "Typed Rust aggregate tuple";

@@ -7,6 +7,7 @@
 #include "mlir/Dialect/RustTyped/IR/RustTypedOps.h"
 
 #include "RustToLLVM/Support/OpCreateCompat.h"
+#include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/OpImplementation.h"
@@ -80,6 +81,39 @@ bool isDestructurableAggregate(Type type) {
   return destructurable && destructurable.getSubelementIndexMap().has_value();
 }
 
+Type getIndexedElementType(Type aggregateType, Attribute index) {
+  std::optional<int64_t> constantIndex = getConstantIndex(index);
+  if (!constantIndex)
+    return {};
+
+  if (auto destructurable =
+          dyn_cast<DestructurableTypeInterface>(aggregateType)) {
+    if (Type elementType = destructurable.getTypeAtIndex(index))
+      return elementType;
+  }
+  if (auto structType = dyn_cast<LLVM::LLVMStructType>(aggregateType)) {
+    if (*constantIndex < 0 ||
+        static_cast<size_t>(*constantIndex) >= structType.getBody().size())
+      return {};
+    return structType.getBody()[*constantIndex];
+  }
+  if (auto arrayType = dyn_cast<LLVM::LLVMArrayType>(aggregateType)) {
+    if (*constantIndex < 0 ||
+        static_cast<uint64_t>(*constantIndex) >= arrayType.getNumElements())
+      return {};
+    return arrayType.getElementType();
+  }
+  return {};
+}
+
+Type getAddressElementType(Type addressType) {
+  if (auto slotType = dyn_cast<SlotType>(addressType))
+    return slotType.getElementType();
+  if (auto addrType = dyn_cast<TypedAddrType>(addressType))
+    return addrType.getElementType();
+  return {};
+}
+
 Value createTypedLoad(Location loc, OpBuilder &builder,
                       const MemorySlot &slot) {
   return mlir::rust::createOp<LoadOp>(builder, loc, slot.elemType, slot.ptr)
@@ -108,14 +142,34 @@ LogicalResult StoreOp::verify() {
   return success();
 }
 
+LogicalResult FieldAddrOp::verify() {
+  Type baseElementType = getAddressElementType(getBase().getType());
+  if (!baseElementType)
+    return emitOpError("base must be a typed Rust local slot or place "
+                       "address");
+
+  TypedAddrType resultType = getAddress().getType();
+  Type fieldType = getIndexedElementType(baseElementType, getIndexAttr());
+  if (!fieldType)
+    return emitOpError("base element type has no field at index ")
+           << getIndex();
+  if (fieldType != resultType.getElementType())
+    return emitOpError("result element type must match projected field type");
+  return success();
+}
+
 LogicalResult BorrowOp::verify() {
   auto resultType = dyn_cast<TypedRefType>(getResult().getType());
   if (!resultType)
     return emitOpError("result type must be a typed Rust reference");
 
-  SlotType slotType = getSlot().getType();
-  if (slotType.getElementType() != resultType.getPointeeType())
-    return emitOpError("slot element type must match reference pointee type");
+  Type pointeeType = getAddressElementType(getSlot().getType());
+  if (!pointeeType)
+    return emitOpError("operand must be a typed Rust local slot or place "
+                       "address");
+  if (pointeeType != resultType.getPointeeType())
+    return emitOpError("operand element type must match reference pointee "
+                       "type");
   if (getMutability() != resultType.getMutability())
     return emitOpError("mutability attribute must match reference type");
   return success();
@@ -126,9 +180,13 @@ LogicalResult RawAddressOp::verify() {
   if (!resultType)
     return emitOpError("result type must be a typed Rust raw pointer");
 
-  SlotType slotType = getSlot().getType();
-  if (slotType.getElementType() != resultType.getPointeeType())
-    return emitOpError("slot element type must match raw pointer pointee type");
+  Type pointeeType = getAddressElementType(getSlot().getType());
+  if (!pointeeType)
+    return emitOpError("operand must be a typed Rust local slot or place "
+                       "address");
+  if (pointeeType != resultType.getPointeeType())
+    return emitOpError("operand element type must match raw pointer pointee "
+                       "type");
   if (getMutability() != resultType.getMutability())
     return emitOpError("mutability attribute must match raw pointer type");
   return success();

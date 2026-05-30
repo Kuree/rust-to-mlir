@@ -220,6 +220,18 @@ Type getIndexedElementType(Type aggregateType, Attribute index) {
   return {};
 }
 
+IntegerAttr getStaticProjectionIndexAttr(Operation &projectionElem) {
+  if (auto field = dyn_cast<rust::mir::ProjectionFieldOp>(projectionElem))
+    return field.getIndexAttr();
+
+  auto constantIndex =
+      dyn_cast<rust::mir::ProjectionConstantIndexOp>(projectionElem);
+  if (!constantIndex || constantIndex.getFromEnd())
+    return {};
+
+  return constantIndex.getOffsetAttr();
+}
+
 Value createLoad(OpBuilder &builder, Location loc, LocalSlot &slot) {
   return mlir::rust::createOp<rust::mir::LoadOp>(builder, loc, slot.elementType,
                                                  slot.slot)
@@ -232,8 +244,9 @@ void createStore(OpBuilder &builder, Location loc, Value value,
 }
 
 std::optional<PlaceAddress>
-materializePlaceAddress(rust::mir::PlaceOp place,
-                        llvm::StringMap<LocalSlot> &slots) {
+materializePlaceAddress(rust::mir::PlaceOp place, OpBuilder &builder,
+                        Location loc, llvm::StringMap<LocalSlot> &slots,
+                        StringAttr spanAttr) {
   std::optional<std::string> localName = getPlaceLocalName(place);
   if (!localName)
     return std::nullopt;
@@ -242,10 +255,29 @@ materializePlaceAddress(rust::mir::PlaceOp place,
   if (!slot)
     return std::nullopt;
 
-  if (hasProjection(place))
-    return std::nullopt;
+  Value address = slot->slot;
+  Type elementType = slot->elementType;
+  if (!hasProjection(place))
+    return PlaceAddress{address, elementType};
 
-  return PlaceAddress{slot->slot, slot->elementType};
+  for (Operation &projectionElem : place.getBody().front()) {
+    IntegerAttr indexAttr = getStaticProjectionIndexAttr(projectionElem);
+    if (!indexAttr)
+      return std::nullopt;
+
+    Type fieldType = getIndexedElementType(elementType, indexAttr);
+    if (!fieldType)
+      return std::nullopt;
+
+    auto addrType =
+        rust::mir::TypedAddrType::get(place.getContext(), fieldType);
+    address = mlir::rust::createOp<rust::mir::FieldAddrOp>(
+                  builder, loc, addrType, address, indexAttr, spanAttr)
+                  .getAddress();
+    elementType = fieldType;
+  }
+
+  return PlaceAddress{address, elementType};
 }
 
 std::optional<Type> inferPlaceType(rust::mir::PlaceOp place,
@@ -263,11 +295,7 @@ std::optional<Type> inferPlaceType(rust::mir::PlaceOp place,
     return type;
 
   for (Operation &projectionElem : place.getBody().front()) {
-    auto field = dyn_cast<rust::mir::ProjectionFieldOp>(projectionElem);
-    if (!field)
-      return std::nullopt;
-
-    auto indexAttr = field.getIndexAttr();
+    IntegerAttr indexAttr = getStaticProjectionIndexAttr(projectionElem);
     if (!indexAttr)
       return std::nullopt;
 
@@ -319,12 +347,11 @@ std::optional<Value> materializePlaceRead(rust::mir::PlaceOp place,
   Block &projectionBlock = place.getBody().front();
   for (auto indexedProjection : llvm::enumerate(projectionBlock)) {
     Operation &projectionElem = indexedProjection.value();
-    auto field = dyn_cast<rust::mir::ProjectionFieldOp>(projectionElem);
-    if (!field)
+    IntegerAttr indexAttr = getStaticProjectionIndexAttr(projectionElem);
+    if (!indexAttr)
       return std::nullopt;
 
-    Type resultType =
-        getIndexedElementType(value.getType(), field.getIndexAttr());
+    Type resultType = getIndexedElementType(value.getType(), indexAttr);
 
     bool isLastProjection =
         indexedProjection.index() + 1 == projectionBlock.getOperations().size();
@@ -335,7 +362,7 @@ std::optional<Value> materializePlaceRead(rust::mir::PlaceOp place,
 
     value = mlir::rust::createOp<rust::mir::FieldOp>(
                 builder, loc, resultType, value,
-                static_cast<int64_t>(field.getIndex()), spanAttr)
+                static_cast<int64_t>(indexAttr.getInt()), spanAttr)
                 .getResult();
   }
 
@@ -651,8 +678,8 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     if (!sourcePlace)
       return assign.emitError("expected ref source place");
 
-    std::optional<PlaceAddress> address =
-        materializePlaceAddress(sourcePlace, slots);
+    std::optional<PlaceAddress> address = materializePlaceAddress(
+        sourcePlace, builder, assign.getLoc(), slots, assign.getSpanAttr());
     if (!address)
       return assign.emitError("failed to materialize ref source address");
 
@@ -678,8 +705,8 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     if (!sourcePlace)
       return assign.emitError("expected address_of source place");
 
-    std::optional<PlaceAddress> address =
-        materializePlaceAddress(sourcePlace, slots);
+    std::optional<PlaceAddress> address = materializePlaceAddress(
+        sourcePlace, builder, assign.getLoc(), slots, assign.getSpanAttr());
     if (!address)
       return assign.emitError("failed to materialize address_of source");
 

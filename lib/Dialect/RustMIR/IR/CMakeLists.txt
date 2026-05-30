@@ -14,6 +14,7 @@ add_mlir_dialect_library(RustToLLVMRustMIRDialect
 
   LINK_LIBS PUBLIC
   MLIRIR
+  MLIRLLVMDialect
   MLIRMemorySlotInterfaces
   MLIRSupport
   MLIRSideEffectInterfaces

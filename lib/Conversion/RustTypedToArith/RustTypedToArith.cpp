@@ -90,6 +90,12 @@ public:
         return Type();
       return rustmir::SlotType::get(this->context, elementType);
     });
+    addConversion([this](rustmir::TypedAddrType type) -> Type {
+      Type elementType = convertType(type.getElementType());
+      if (!elementType)
+        return Type();
+      return rustmir::TypedAddrType::get(this->context, elementType);
+    });
     addConversion([this](rustmir::TypedTupleType type) -> Type {
       SmallVector<Type> elementTypes;
       elementTypes.reserve(type.getElementTypes().size());
@@ -742,6 +748,25 @@ struct FieldConversion : public OpConversionPattern<rustmir::FieldOp> {
   }
 };
 
+struct FieldAddrConversion : public OpConversionPattern<rustmir::FieldAddrOp> {
+  using OpConversionPattern<rustmir::FieldAddrOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::FieldAddrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType =
+        getTypeConverter()->convertType(op.getAddress().getType());
+    auto addrType = dyn_cast_or_null<rustmir::TypedAddrType>(resultType);
+    if (!addrType)
+      return failure();
+    auto newOp = mlir::rust::createOp<rustmir::FieldAddrOp>(
+        rewriter, op.getLoc(), addrType, adaptor.getBase(), op.getIndexAttr(),
+        op.getSpanAttr());
+    rewriter.replaceOp(op, newOp.getAddress());
+    return success();
+  }
+};
+
 struct TypedReturnConversion
     : public OpConversionPattern<rustmir::TypedReturnOp> {
   using OpConversionPattern<rustmir::TypedReturnOp>::OpConversionPattern;
@@ -914,6 +939,11 @@ struct ConvertRustTypedToArithPass
     target.addDynamicallyLegalOp<rustmir::FieldOp>([&](rustmir::FieldOp op) {
       return !isLowerableField(op, typeConverter);
     });
+    target.addDynamicallyLegalOp<rustmir::FieldAddrOp>(
+        [&](rustmir::FieldAddrOp op) {
+          return !needsTypeConversion(op.getBase().getType(), typeConverter) &&
+                 !needsTypeConversion(op.getAddress().getType(), typeConverter);
+        });
     target.addDynamicallyLegalOp<rustmir::TypedReturnOp>(
         [&](rustmir::TypedReturnOp op) {
           return llvm::none_of(op.getValues(), [&](Value value) {
@@ -973,9 +1003,9 @@ struct ConvertRustTypedToArithPass
         CheckedAddOpConversion, CheckedSubOpConversion, CheckedMulOpConversion,
         NegOpConversion, NotOpConversion, LocalSlotConversion, LoadConversion,
         StoreConversion, BorrowOpConversion, RawAddressOpConversion,
-        MakeAggregateConversion, FieldConversion, TypedReturnConversion,
-        TypedSwitchIntConversion, TypedAssertConversion, TypedCallConversion>(
-        typeConverter, context);
+        MakeAggregateConversion, FieldConversion, FieldAddrConversion,
+        TypedReturnConversion, TypedSwitchIntConversion, TypedAssertConversion,
+        TypedCallConversion>(typeConverter, context);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
   }

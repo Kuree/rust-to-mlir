@@ -11,6 +11,7 @@
 
 namespace mlir::rust::typed {
 using SlotType = ::mlir::rust::mir::SlotType;
+using AddrType = ::mlir::rust::mir::TypedAddrType;
 using TupleType = ::mlir::rust::mir::TypedTupleType;
 using ArrayType = ::mlir::rust::mir::TypedArrayType;
 using RefType = ::mlir::rust::mir::TypedRefType;
