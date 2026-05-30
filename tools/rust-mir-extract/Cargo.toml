@@ -1,0 +1,11 @@
+[package]
+name = "rust-mir-extract"
+version = "0.1.0"
+edition = "2021"
+publish = false
+build = "build.rs"
+
+[[bin]]
+name = "rust-mir-extract"
+path = "src/main.rs"
+

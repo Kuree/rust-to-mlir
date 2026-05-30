@@ -1,0 +1,9 @@
+// RUN: rust-translate --from-ndjson %S/../Inputs/add.ndjson --mlir-print-debuginfo | rust-opt --rust-lift-typed-mir --mlir-print-debuginfo | FileCheck %s
+
+// CHECK: rust.typed.binop
+// CHECK-SAME: loc(#[[ADD_LOC:loc[0-9]+]])
+// CHECK: rust.typed.store
+// CHECK-SAME: loc(#[[ADD_LOC]])
+// CHECK: rust.typed.return
+// CHECK-SAME: loc(#[[ADD_LOC]])
+// CHECK-DAG: #[[ADD_LOC]] = loc("test.rs":1:1)

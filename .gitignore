@@ -1,0 +1,56 @@
+# Build directories
+build/
+build-*/
+cmake-build-*/
+out/
+dist/
+
+# CMake generated files
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+CTestTestfile.cmake
+DartConfiguration.tcl
+Testing/
+install_manifest.txt
+compile_commands.json
+
+# Native build artifacts
+*.a
+*.ar
+*.d
+*.dll
+*.dylib
+*.exe
+*.exp
+*.ilk
+*.la
+*.lai
+*.lib
+*.lo
+*.o
+*.obj
+*.pdb
+*.so
+*.so.*
+*.slo
+
+# Rust build artifacts used by the MIR extractor tests
+target/
+*.rlib
+
+# Local environments and Python cache
+env/
+.env/
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*$py.class
+
+# Editor and OS noise
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*~

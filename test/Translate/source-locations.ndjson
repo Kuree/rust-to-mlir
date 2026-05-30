@@ -1,0 +1,25 @@
+// RUN: rust-translate --from-ndjson %s --mlir-print-debuginfo | FileCheck %s
+
+{"record":"module","crate":"locs","span":"loc.rs:1:1: 6:2"}
+{"record":"function","event":"begin","name":"locs","signature":"fn()","arg_count":0,"span":"Span { id: 1, repr: \"loc.rs:1:1: 6:2\" }"}
+{"record":"local","index":0,"name":"_0","role":"return","ty":"i32","span":"loc.rs:1:16"}
+{"record":"block","event":"begin","index":0}
+{"record":"statement","kind":"Assign","span":"loc.rs:2:5: 2:10","payload":{"debug":"Assign(_0, Use(Constant(...)))"}}
+{"record":"rvalue","kind":"Use","payload":{"debug":"Use(Constant(...))"}}
+{"record":"terminator","kind":"Return","span":"Span { id: 2, repr: \"loc.rs:5:1: 6:2\" }","payload":{}}
+{"record":"block","event":"end","index":0}
+{"record":"function","event":"end","name":"locs"}
+
+// CHECK: module
+// CHECK: rust.mir.local
+// CHECK-SAME: loc(#[[LOCAL_LOC:loc[0-9]+]])
+// CHECK: rust.mir.assign
+// CHECK-SAME: loc(#[[ASSIGN_LOC:loc[0-9]+]])
+// CHECK: rust.mir.use
+// CHECK-SAME: loc(#[[ASSIGN_LOC]])
+// CHECK: rust.mir.return
+// CHECK-SAME: loc(#[[RETURN_LOC:loc[0-9]+]])
+// CHECK-DAG: #[[MODULE_LOC:loc[0-9]*]] = loc("loc.rs":1:1 to 6:2)
+// CHECK-DAG: #[[LOCAL_LOC]] = loc("loc.rs":1:16)
+// CHECK-DAG: #[[ASSIGN_LOC]] = loc("loc.rs":2:5 to :10)
+// CHECK-DAG: #[[RETURN_LOC]] = loc("loc.rs":5:1 to 6:2)

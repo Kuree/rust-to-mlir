@@ -1,0 +1,9 @@
+// RUN: not rust-translate --from-ndjson %s 2>&1 | FileCheck %s
+
+{"record":"module","crate":"bad"}
+{"record":"function","event":"begin","name":"bad","signature":"fn()","arg_count":0}
+{"record":"block","event":"begin","index":0}
+{"record":"statement","kind":"NotARealStatement","payload":{}}
+
+// CHECK: unsupported statement kind: NotARealStatement
+
