@@ -444,6 +444,18 @@ MlirType rustTypedArrayTypeGet(MlirContext context, MlirType elementType,
                                            length));
 }
 
+MlirType rustTypedRefTypeGet(MlirContext context, MlirStringRef mutability,
+                             MlirType pointeeType) {
+  return wrap(rustmir::TypedRefType::get(unwrap(context), unwrap(mutability),
+                                         unwrap(pointeeType)));
+}
+
+MlirType rustTypedRawPtrTypeGet(MlirContext context, MlirStringRef mutability,
+                                MlirType pointeeType) {
+  return wrap(rustmir::TypedRawPtrType::get(unwrap(context), unwrap(mutability),
+                                            unwrap(pointeeType)));
+}
+
 MlirAttribute rustMirSwitchTargetsAttrGet(MlirContext context,
                                           int64_t otherwise,
                                           intptr_t numBranches,
@@ -479,6 +491,51 @@ MlirOperation rustMirProjectionFieldCreate(MlirLocation location, int64_t index,
   state.addAttribute("index", builder.getI64IntegerAttr(index));
   addStringAttr(context, state, "ty", type);
   state.addAttribute("mir_kind", builder.getStringAttr("Field"));
+  return createOperation(state);
+}
+
+MlirOperation rustMirProjectionDerefCreate(MlirLocation location) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.projection_deref");
+  state.addAttribute("mir_kind", builder.getStringAttr("Deref"));
+  return createOperation(state);
+}
+
+MlirOperation rustMirProjectionIndexCreate(MlirLocation location,
+                                           int64_t local) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.projection_index");
+  state.addAttribute("local", builder.getI64IntegerAttr(local));
+  state.addAttribute("mir_kind", builder.getStringAttr("Index"));
+  return createOperation(state);
+}
+
+MlirOperation rustMirProjectionConstantIndexCreate(MlirLocation location,
+                                                   int64_t offset,
+                                                   int64_t minLength,
+                                                   bool fromEnd) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.projection_constant_index");
+  state.addAttribute("offset", builder.getI64IntegerAttr(offset));
+  state.addAttribute("min_length", builder.getI64IntegerAttr(minLength));
+  state.addAttribute("from_end", builder.getBoolAttr(fromEnd));
+  state.addAttribute("mir_kind", builder.getStringAttr("ConstantIndex"));
+  return createOperation(state);
+}
+
+MlirOperation rustMirProjectionSubsliceCreate(MlirLocation location,
+                                              int64_t from, int64_t to,
+                                              bool fromEnd) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.projection_subslice");
+  state.addAttribute("from_index", builder.getI64IntegerAttr(from));
+  state.addAttribute("to_index", builder.getI64IntegerAttr(to));
+  state.addAttribute("from_end", builder.getBoolAttr(fromEnd));
+  state.addAttribute("mir_kind", builder.getStringAttr("Subslice"));
   return createOperation(state);
 }
 
@@ -593,6 +650,41 @@ MlirOperation rustMirRvalueUseCreate(MlirLocation location,
   state.addAttribute("mir_kind", builder.getStringAttr("Use"));
   MlirOperation wrapped = createRegionOperation(state);
   appendOwnedChild(unwrap(wrapped), operand);
+  return wrapped;
+}
+
+MlirOperation rustMirRvalueRefCreate(MlirLocation location,
+                                     MlirStringRef rustRegion,
+                                     MlirStringRef borrowKind,
+                                     MlirStringRef mutability,
+                                     MlirOperation place, MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.ref");
+  state.addAttribute("mir_kind", builder.getStringAttr("Ref"));
+  addStringAttr(context, state, "rust_region", rustRegion);
+  addStringAttr(context, state, "borrow_kind", borrowKind);
+  addStringAttr(context, state, "mutability", mutability);
+  addStringAttr(context, state, "debug", debug);
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), place);
+  return wrapped;
+}
+
+MlirOperation rustMirRvalueAddressOfCreate(MlirLocation location,
+                                           MlirStringRef rawPtrKind,
+                                           MlirStringRef mutability,
+                                           MlirOperation place,
+                                           MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.address_of");
+  state.addAttribute("mir_kind", builder.getStringAttr("AddressOf"));
+  addStringAttr(context, state, "raw_ptr_kind", rawPtrKind);
+  addStringAttr(context, state, "mutability", mutability);
+  addStringAttr(context, state, "debug", debug);
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), place);
   return wrapped;
 }
 

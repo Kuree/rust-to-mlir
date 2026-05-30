@@ -92,7 +92,16 @@ def Rust_NopOp : Rust_MirrorOp<"nop", "MIR StatementKind::Nop">;
 def Rust_UnsupportedStatementOp : Rust_MirrorOp<"unsupported_statement", "Unsupported MIR statement">;
 
 // Rvalue variants.
-def Rust_AddressOfOp : Rust_MirrorOp<"address_of", "MIR Rvalue::AddressOf">;
+def Rust_AddressOfOp : Rust_Op<"address_of", [NoTerminator, SingleBlock]> {
+  let summary = "MIR Rvalue::AddressOf";
+  let arguments = (ins StrAttr:$raw_ptr_kind,
+                       StrAttr:$mutability,
+                       OptionalAttr<StrAttr>:$mir_kind,
+                       OptionalAttr<StrAttr>:$debug,
+                       OptionalAttr<StrAttr>:$span);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+}
 def Rust_AggregateOp : Rust_Op<"aggregate", [NoTerminator, SingleBlock]> {
   let summary = "MIR Rvalue::Aggregate";
   let arguments = (ins StrAttr:$aggregate_kind,
@@ -121,7 +130,17 @@ def Rust_CheckedBinaryOp : Rust_Op<"checked_binary_op", [NoTerminator, SingleBlo
 def Rust_CopyForDerefOp : Rust_MirrorOp<"copy_for_deref", "MIR Rvalue::CopyForDeref">;
 def Rust_DiscriminantOp : Rust_MirrorOp<"discriminant", "MIR Rvalue::Discriminant">;
 def Rust_LenOp : Rust_MirrorOp<"len", "MIR Rvalue::Len">;
-def Rust_RefOp : Rust_MirrorOp<"ref", "MIR Rvalue::Ref">;
+def Rust_RefOp : Rust_Op<"ref", [NoTerminator, SingleBlock]> {
+  let summary = "MIR Rvalue::Ref";
+  let arguments = (ins StrAttr:$borrow_kind,
+                       StrAttr:$mutability,
+                       OptionalAttr<StrAttr>:$rust_region,
+                       OptionalAttr<StrAttr>:$mir_kind,
+                       OptionalAttr<StrAttr>:$debug,
+                       OptionalAttr<StrAttr>:$span);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+}
 def Rust_RepeatOp : Rust_MirrorOp<"repeat", "MIR Rvalue::Repeat">;
 def Rust_ShallowInitBoxOp : Rust_MirrorOp<"shallow_init_box", "MIR Rvalue::ShallowInitBox">;
 def Rust_ThreadLocalRefOp : Rust_MirrorOp<"thread_local_ref", "MIR Rvalue::ThreadLocalRef">;
@@ -242,7 +261,12 @@ def Rust_AggregateCoroutineClosureOp : Rust_MirrorOp<"aggregate_coroutine_closur
 def Rust_AggregateRawPtrOp : Rust_MirrorOp<"aggregate_raw_ptr", "MIR AggregateKind::RawPtr">;
 
 // ProjectionElem variants.
-def Rust_ProjectionDerefOp : Rust_MirrorOp<"projection_deref", "MIR ProjectionElem::Deref">;
+def Rust_ProjectionDerefOp : Rust_Op<"projection_deref"> {
+  let summary = "MIR ProjectionElem::Deref";
+  let arguments = (ins OptionalAttr<StrAttr>:$mir_kind,
+                       OptionalAttr<StrAttr>:$span);
+  let assemblyFormat = "attr-dict";
+}
 def Rust_ProjectionFieldOp : Rust_Op<"projection_field"> {
   let summary = "MIR ProjectionElem::Field";
   let arguments = (ins I64Attr:$index,
@@ -251,9 +275,31 @@ def Rust_ProjectionFieldOp : Rust_Op<"projection_field"> {
                        OptionalAttr<StrAttr>:$span);
   let assemblyFormat = "attr-dict";
 }
-def Rust_ProjectionIndexOp : Rust_MirrorOp<"projection_index", "MIR ProjectionElem::Index">;
-def Rust_ProjectionConstantIndexOp : Rust_MirrorOp<"projection_constant_index", "MIR ProjectionElem::ConstantIndex">;
-def Rust_ProjectionSubsliceOp : Rust_MirrorOp<"projection_subslice", "MIR ProjectionElem::Subslice">;
+def Rust_ProjectionIndexOp : Rust_Op<"projection_index"> {
+  let summary = "MIR ProjectionElem::Index";
+  let arguments = (ins I64Attr:$local,
+                       OptionalAttr<StrAttr>:$mir_kind,
+                       OptionalAttr<StrAttr>:$span);
+  let assemblyFormat = "attr-dict";
+}
+def Rust_ProjectionConstantIndexOp : Rust_Op<"projection_constant_index"> {
+  let summary = "MIR ProjectionElem::ConstantIndex";
+  let arguments = (ins I64Attr:$offset,
+                       I64Attr:$min_length,
+                       BoolAttr:$from_end,
+                       OptionalAttr<StrAttr>:$mir_kind,
+                       OptionalAttr<StrAttr>:$span);
+  let assemblyFormat = "attr-dict";
+}
+def Rust_ProjectionSubsliceOp : Rust_Op<"projection_subslice"> {
+  let summary = "MIR ProjectionElem::Subslice";
+  let arguments = (ins I64Attr:$from_index,
+                       I64Attr:$to_index,
+                       BoolAttr:$from_end,
+                       OptionalAttr<StrAttr>:$mir_kind,
+                       OptionalAttr<StrAttr>:$span);
+  let assemblyFormat = "attr-dict";
+}
 def Rust_ProjectionDowncastOp : Rust_MirrorOp<"projection_downcast", "MIR ProjectionElem::Downcast">;
 def Rust_ProjectionOpaqueCastOp : Rust_MirrorOp<"projection_opaque_cast", "MIR ProjectionElem::OpaqueCast">;
 

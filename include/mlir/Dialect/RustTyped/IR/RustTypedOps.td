@@ -152,6 +152,29 @@ def RustTyped_FieldOp : RustTyped_Op<"field"> {
   let assemblyFormat = "$aggregate attr-dict `:` type($aggregate) `->` type($result)";
 }
 
+def RustTyped_BorrowOp : RustTyped_Op<"borrow"> {
+  let summary = "Create a typed Rust reference to a local slot";
+  let arguments = (ins RustTyped_SlotType:$slot,
+                       StrAttr:$borrow_kind,
+                       StrAttr:$mutability,
+                       OptionalAttr<StrAttr>:$rust_region,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$slot attr-dict `:` type($slot) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+def RustTyped_RawAddressOp : RustTyped_Op<"address_of"> {
+  let summary = "Create a typed Rust raw pointer to a local slot";
+  let arguments = (ins RustTyped_SlotType:$slot,
+                       StrAttr:$raw_ptr_kind,
+                       StrAttr:$mutability,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$slot attr-dict `:` type($slot) `->` type($result)";
+  let hasVerifier = 1;
+}
+
 def RustTyped_TypedGotoOp : RustTyped_Op<"goto"> {
   let summary = "Typed Rust MIR goto terminator placeholder";
   let arguments = (ins I64Attr:$target, OptionalAttr<StrAttr>:$span);

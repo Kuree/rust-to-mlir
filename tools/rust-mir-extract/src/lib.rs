@@ -7,7 +7,8 @@ extern crate rustc_public;
 
 use rustc_public::crate_def::CrateDef;
 use rustc_public::mir::{
-    AggregateKind, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind, TerminatorKind,
+    AggregateKind, Mutability, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind,
+    TerminatorKind,
 };
 use rustc_public::target::{Endian, MachineInfo};
 use rustc_public::ty::{Abi, ConstantKind, RigidTy, Ty, TyKind};
@@ -100,12 +101,21 @@ type RustMirTypeFromRustcPublicString =
     unsafe extern "C" fn(MlirContext, MlirStringRef) -> MlirType;
 type RustTypedTupleTypeGet = unsafe extern "C" fn(MlirContext, isize, *const MlirType) -> MlirType;
 type RustTypedArrayTypeGet = unsafe extern "C" fn(MlirContext, MlirType, u64) -> MlirType;
+type RustTypedRefTypeGet = unsafe extern "C" fn(MlirContext, MlirStringRef, MlirType) -> MlirType;
+type RustTypedRawPtrTypeGet =
+    unsafe extern "C" fn(MlirContext, MlirStringRef, MlirType) -> MlirType;
 type RustMirSwitchTargetsAttrGet =
     unsafe extern "C" fn(MlirContext, i64, isize, *const i64, *const i64) -> MlirAttribute;
 type RustMirProjectionCreate =
     unsafe extern "C" fn(MlirLocation, MlirStringRef, MlirStringRef) -> MlirOperation;
+type RustMirProjectionDerefCreate = unsafe extern "C" fn(MlirLocation) -> MlirOperation;
 type RustMirProjectionFieldCreate =
     unsafe extern "C" fn(MlirLocation, i64, MlirStringRef) -> MlirOperation;
+type RustMirProjectionIndexCreate = unsafe extern "C" fn(MlirLocation, i64) -> MlirOperation;
+type RustMirProjectionConstantIndexCreate =
+    unsafe extern "C" fn(MlirLocation, i64, i64, bool) -> MlirOperation;
+type RustMirProjectionSubsliceCreate =
+    unsafe extern "C" fn(MlirLocation, i64, i64, bool) -> MlirOperation;
 type RustMirPlaceCreate =
     unsafe extern "C" fn(MlirLocation, i64, isize, *const MlirOperation) -> MlirOperation;
 type RustMirCopyCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
@@ -137,6 +147,21 @@ type RustMirRvalueAggregateCreate = unsafe extern "C" fn(
     *const MlirOperation,
 ) -> MlirOperation;
 type RustMirRvalueUseCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
+type RustMirRvalueRefCreate = unsafe extern "C" fn(
+    MlirLocation,
+    MlirStringRef,
+    MlirStringRef,
+    MlirStringRef,
+    MlirOperation,
+    MlirStringRef,
+) -> MlirOperation;
+type RustMirRvalueAddressOfCreate = unsafe extern "C" fn(
+    MlirLocation,
+    MlirStringRef,
+    MlirStringRef,
+    MlirOperation,
+    MlirStringRef,
+) -> MlirOperation;
 type RustMirDebugOpCreate = unsafe extern "C" fn(
     MlirLocation,
     MlirStringRef,
@@ -219,9 +244,15 @@ struct MlirApi {
     type_from_rustc_public_string: RustMirTypeFromRustcPublicString,
     typed_tuple_type_get: RustTypedTupleTypeGet,
     typed_array_type_get: RustTypedArrayTypeGet,
+    typed_ref_type_get: RustTypedRefTypeGet,
+    typed_raw_ptr_type_get: RustTypedRawPtrTypeGet,
     switch_targets_attr_get: RustMirSwitchTargetsAttrGet,
     projection_create: RustMirProjectionCreate,
+    projection_deref_create: RustMirProjectionDerefCreate,
     projection_field_create: RustMirProjectionFieldCreate,
+    projection_index_create: RustMirProjectionIndexCreate,
+    projection_constant_index_create: RustMirProjectionConstantIndexCreate,
+    projection_subslice_create: RustMirProjectionSubsliceCreate,
     place_create: RustMirPlaceCreate,
     copy_create: RustMirCopyCreate,
     move_create: RustMirMoveCreate,
@@ -232,6 +263,8 @@ struct MlirApi {
     rvalue_unary_op_create: RustMirRvalueUnaryOpCreate,
     rvalue_aggregate_create: RustMirRvalueAggregateCreate,
     rvalue_use_create: RustMirRvalueUseCreate,
+    rvalue_ref_create: RustMirRvalueRefCreate,
+    rvalue_address_of_create: RustMirRvalueAddressOfCreate,
     debug_op_create: RustMirDebugOpCreate,
     goto_create: RustMirGotoCreate,
     switch_int_create: RustMirSwitchIntCreate,
@@ -284,9 +317,18 @@ impl MlirApi {
                 )?,
                 typed_tuple_type_get: load_symbol(handle, "rustTypedTupleTypeGet")?,
                 typed_array_type_get: load_symbol(handle, "rustTypedArrayTypeGet")?,
+                typed_ref_type_get: load_symbol(handle, "rustTypedRefTypeGet")?,
+                typed_raw_ptr_type_get: load_symbol(handle, "rustTypedRawPtrTypeGet")?,
                 switch_targets_attr_get: load_symbol(handle, "rustMirSwitchTargetsAttrGet")?,
                 projection_create: load_symbol(handle, "rustMirProjectionCreate")?,
+                projection_deref_create: load_symbol(handle, "rustMirProjectionDerefCreate")?,
                 projection_field_create: load_symbol(handle, "rustMirProjectionFieldCreate")?,
+                projection_index_create: load_symbol(handle, "rustMirProjectionIndexCreate")?,
+                projection_constant_index_create: load_symbol(
+                    handle,
+                    "rustMirProjectionConstantIndexCreate",
+                )?,
+                projection_subslice_create: load_symbol(handle, "rustMirProjectionSubsliceCreate")?,
                 place_create: load_symbol(handle, "rustMirPlaceCreate")?,
                 copy_create: load_symbol(handle, "rustMirCopyCreate")?,
                 move_create: load_symbol(handle, "rustMirMoveCreate")?,
@@ -297,6 +339,8 @@ impl MlirApi {
                 rvalue_unary_op_create: load_symbol(handle, "rustMirRvalueUnaryOpCreate")?,
                 rvalue_aggregate_create: load_symbol(handle, "rustMirRvalueAggregateCreate")?,
                 rvalue_use_create: load_symbol(handle, "rustMirRvalueUseCreate")?,
+                rvalue_ref_create: load_symbol(handle, "rustMirRvalueRefCreate")?,
+                rvalue_address_of_create: load_symbol(handle, "rustMirRvalueAddressOfCreate")?,
                 debug_op_create: load_symbol(handle, "rustMirDebugOpCreate")?,
                 goto_create: load_symbol(handle, "rustMirGotoCreate")?,
                 switch_int_create: load_symbol(handle, "rustMirSwitchIntCreate")?,
@@ -537,15 +581,60 @@ struct MirPlace {
 }
 
 enum MirProjection {
-    Field { index: usize, ty: String },
-    Unsupported { kind: String, debug: String },
+    Deref,
+    Field {
+        index: usize,
+        ty: String,
+    },
+    Index {
+        local: usize,
+    },
+    ConstantIndex {
+        offset: u64,
+        min_length: u64,
+        from_end: bool,
+    },
+    Subslice {
+        from: u64,
+        to: u64,
+        from_end: bool,
+    },
+    Unsupported {
+        kind: String,
+        debug: String,
+    },
 }
 
 #[derive(Clone)]
 enum MirType {
     Debug(String),
     Tuple(Vec<MirType>),
-    Array { element: Box<MirType>, length: u64 },
+    Array {
+        element: Box<MirType>,
+        length: u64,
+    },
+    Ref {
+        pointee: Box<MirType>,
+        mutability: String,
+    },
+    RawPtr {
+        pointee: Box<MirType>,
+        mutability: String,
+    },
+}
+
+fn reference_mutability(mutability: Mutability) -> &'static str {
+    match mutability {
+        Mutability::Mut => "mut",
+        Mutability::Not => "shared",
+    }
+}
+
+fn raw_pointer_mutability(mutability: Mutability) -> &'static str {
+    match mutability {
+        Mutability::Mut => "mut",
+        Mutability::Not => "const",
+    }
 }
 
 impl MirType {
@@ -567,6 +656,14 @@ impl MirType {
                     length,
                 },
                 Err(_) => Self::Debug(format!("{ty:?}")),
+            },
+            TyKind::RigidTy(RigidTy::Ref(_, pointee, mutability)) => Self::Ref {
+                pointee: Box::new(Self::from_public(pointee)),
+                mutability: reference_mutability(mutability).to_string(),
+            },
+            TyKind::RigidTy(RigidTy::RawPtr(pointee, mutability)) => Self::RawPtr {
+                pointee: Box::new(Self::from_public(pointee)),
+                mutability: raw_pointer_mutability(mutability).to_string(),
             },
             _ => Self::Debug(format!("{ty:?}")),
         }
@@ -651,6 +748,19 @@ enum MirRvalue {
     },
     Use {
         operand: Box<MirOperand>,
+    },
+    Ref {
+        region: String,
+        borrow_kind: String,
+        mutability: String,
+        place: MirPlace,
+        debug: String,
+    },
+    AddressOf {
+        raw_ptr_kind: String,
+        mutability: String,
+        place: MirPlace,
+        debug: String,
     },
     Unsupported {
         kind: String,
@@ -888,9 +998,25 @@ impl MirPlace {
 impl MirProjection {
     fn from_public(elem: &ProjectionElem) -> Self {
         match elem {
+            ProjectionElem::Deref => Self::Deref,
             ProjectionElem::Field(index, ty) => Self::Field {
                 index: *index,
                 ty: format!("{ty:?}"),
+            },
+            ProjectionElem::Index(local) => Self::Index { local: *local },
+            ProjectionElem::ConstantIndex {
+                offset,
+                min_length,
+                from_end,
+            } => Self::ConstantIndex {
+                offset: *offset,
+                min_length: *min_length,
+                from_end: *from_end,
+            },
+            ProjectionElem::Subslice { from, to, from_end } => Self::Subslice {
+                from: *from,
+                to: *to,
+                from_end: *from_end,
             },
             _ => {
                 let debug = format!("{elem:?}");
@@ -952,6 +1078,27 @@ impl MirRvalue {
             Rvalue::Use(operand) => Self::Use {
                 operand: Box::new(MirOperand::from_public(operand)),
             },
+            Rvalue::Ref(region, borrow_kind, place) => {
+                let debug = format!("{rvalue:?}");
+                let borrow_debug = format!("{borrow_kind:?}");
+                Self::Ref {
+                    region: format!("{region:?}"),
+                    borrow_kind: variant_name(&borrow_debug).to_string(),
+                    mutability: reference_mutability(borrow_kind.to_mutable_lossy()).to_string(),
+                    place: MirPlace::from_public(place),
+                    debug,
+                }
+            }
+            Rvalue::AddressOf(raw_ptr_kind, place) => {
+                let debug = format!("{rvalue:?}");
+                let kind_debug = format!("{raw_ptr_kind:?}");
+                Self::AddressOf {
+                    raw_ptr_kind: variant_name(&kind_debug).to_string(),
+                    mutability: raw_pointer_mutability(raw_ptr_kind.to_mutable_lossy()).to_string(),
+                    place: MirPlace::from_public(place),
+                    debug,
+                }
+            }
             _ => {
                 let debug = format!("{rvalue:?}");
                 let kind = variant_name(&debug).to_string();
@@ -1298,16 +1445,68 @@ impl MlirEmitter {
                 let element_type = self.type_from_mir(element);
                 unsafe { (self.api.typed_array_type_get)(self.context, element_type, *length) }
             }
+            MirType::Ref {
+                pointee,
+                mutability,
+            } => {
+                let pointee_type = self.type_from_mir(pointee);
+                unsafe {
+                    (self.api.typed_ref_type_get)(
+                        self.context,
+                        mlir_string(mutability),
+                        pointee_type,
+                    )
+                }
+            }
+            MirType::RawPtr {
+                pointee,
+                mutability,
+            } => {
+                let pointee_type = self.type_from_mir(pointee);
+                unsafe {
+                    (self.api.typed_raw_ptr_type_get)(
+                        self.context,
+                        mlir_string(mutability),
+                        pointee_type,
+                    )
+                }
+            }
         }
     }
 
     fn projection_op(&self, projection: &MirProjection, span: &str) -> MlirOperation {
         match projection {
+            MirProjection::Deref => unsafe {
+                (self.api.projection_deref_create)(self.location(span))
+            },
             MirProjection::Field { index, ty } => unsafe {
                 (self.api.projection_field_create)(
                     self.location(span),
                     *index as i64,
                     mlir_string(ty),
+                )
+            },
+            MirProjection::Index { local } => unsafe {
+                (self.api.projection_index_create)(self.location(span), *local as i64)
+            },
+            MirProjection::ConstantIndex {
+                offset,
+                min_length,
+                from_end,
+            } => unsafe {
+                (self.api.projection_constant_index_create)(
+                    self.location(span),
+                    *offset as i64,
+                    *min_length as i64,
+                    *from_end,
+                )
+            },
+            MirProjection::Subslice { from, to, from_end } => unsafe {
+                (self.api.projection_subslice_create)(
+                    self.location(span),
+                    *from as i64,
+                    *to as i64,
+                    *from_end,
                 )
             },
             MirProjection::Unsupported { kind, debug } => unsafe {
@@ -1424,6 +1623,42 @@ impl MlirEmitter {
             MirRvalue::Use { operand } => {
                 let operand = self.operand_op(operand, span);
                 unsafe { (self.api.rvalue_use_create)(self.location(span), operand) }
+            }
+            MirRvalue::Ref {
+                region,
+                borrow_kind,
+                mutability,
+                place,
+                debug,
+            } => {
+                let place = self.place_op(place, span);
+                unsafe {
+                    (self.api.rvalue_ref_create)(
+                        self.location(span),
+                        mlir_string(region),
+                        mlir_string(borrow_kind),
+                        mlir_string(mutability),
+                        place,
+                        mlir_string(debug),
+                    )
+                }
+            }
+            MirRvalue::AddressOf {
+                raw_ptr_kind,
+                mutability,
+                place,
+                debug,
+            } => {
+                let place = self.place_op(place, span);
+                unsafe {
+                    (self.api.rvalue_address_of_create)(
+                        self.location(span),
+                        mlir_string(raw_ptr_kind),
+                        mlir_string(mutability),
+                        place,
+                        mlir_string(debug),
+                    )
+                }
             }
             MirRvalue::Unsupported { kind, debug } => {
                 self.debug_op(span, rvalue_op_name(kind), kind, debug)

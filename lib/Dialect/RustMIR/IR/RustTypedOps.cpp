@@ -102,6 +102,32 @@ LogicalResult StoreOp::verify() {
   return success();
 }
 
+LogicalResult BorrowOp::verify() {
+  auto resultType = dyn_cast<TypedRefType>(getResult().getType());
+  if (!resultType)
+    return emitOpError("result type must be a typed Rust reference");
+
+  SlotType slotType = getSlot().getType();
+  if (slotType.getElementType() != resultType.getPointeeType())
+    return emitOpError("slot element type must match reference pointee type");
+  if (getMutability() != resultType.getMutability())
+    return emitOpError("mutability attribute must match reference type");
+  return success();
+}
+
+LogicalResult RawAddressOp::verify() {
+  auto resultType = dyn_cast<TypedRawPtrType>(getResult().getType());
+  if (!resultType)
+    return emitOpError("result type must be a typed Rust raw pointer");
+
+  SlotType slotType = getSlot().getType();
+  if (slotType.getElementType() != resultType.getPointeeType())
+    return emitOpError("slot element type must match raw pointer pointee type");
+  if (getMutability() != resultType.getMutability())
+    return emitOpError("mutability attribute must match raw pointer type");
+  return success();
+}
+
 LogicalResult TypedCallOp::verify() {
   if (std::optional<StringRef> abi = getAbi()) {
     if (*abi != "rust" && *abi != "c")

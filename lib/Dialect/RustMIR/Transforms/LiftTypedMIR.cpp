@@ -36,6 +36,11 @@ struct LocalSlot {
   Type elementType;
 };
 
+struct PlaceAddress {
+  Value slot;
+  Type elementType;
+};
+
 StringAttr getAssertMessageAttr(rust::mir::AssertOp assertOp,
                                 OpBuilder &builder) {
   StringAttr debugAttr = assertOp.getDebugAttr();
@@ -200,6 +205,23 @@ Value createLoad(OpBuilder &builder, Location loc, LocalSlot &slot) {
 void createStore(OpBuilder &builder, Location loc, Value value,
                  LocalSlot &slot) {
   mlir::rust::createOp<rust::mir::StoreOp>(builder, loc, value, slot.slot);
+}
+
+std::optional<PlaceAddress>
+materializePlaceAddress(rust::mir::PlaceOp place,
+                        llvm::StringMap<LocalSlot> &slots) {
+  std::optional<std::string> localName = getPlaceLocalName(place);
+  if (!localName)
+    return std::nullopt;
+
+  LocalSlot *slot = lookupSlot(slots, *localName);
+  if (!slot)
+    return std::nullopt;
+
+  if (hasProjection(place))
+    return std::nullopt;
+
+  return PlaceAddress{slot->slot, slot->elementType};
 }
 
 std::optional<Type> inferPlaceType(rust::mir::PlaceOp place,
@@ -595,6 +617,60 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     Value result = mlir::rust::createOp<rust::mir::MakeAggregateOp>(
                        builder, assign.getLoc(), dest->elementType, operands,
                        assign.getSpanAttr())
+                       .getResult();
+    createStore(builder, assign.getLoc(), result, *dest);
+    return success();
+  }
+
+  if (auto ref = dyn_cast<rust::mir::RefOp>(rvalue)) {
+    auto sourcePlace = dyn_cast_or_null<rust::mir::PlaceOp>(childAt(ref, 0));
+    if (!sourcePlace)
+      return assign.emitError("expected ref source place");
+
+    std::optional<PlaceAddress> address =
+        materializePlaceAddress(sourcePlace, slots);
+    if (!address)
+      return assign.emitError("failed to materialize ref source address");
+
+    auto refType = dyn_cast<rust::mir::TypedRefType>(dest->elementType);
+    if (!refType)
+      return assign.emitError("ref destination is not a typed reference");
+    if (address->elementType != refType.getPointeeType())
+      return assign.emitError("ref source type does not match destination");
+
+    Value result =
+        mlir::rust::createOp<rust::mir::BorrowOp>(
+            builder, assign.getLoc(), dest->elementType, address->slot,
+            ref.getBorrowKindAttr(), ref.getMutabilityAttr(),
+            ref.getRustRegionAttr(), assign.getSpanAttr())
+            .getResult();
+    createStore(builder, assign.getLoc(), result, *dest);
+    return success();
+  }
+
+  if (auto addressOf = dyn_cast<rust::mir::AddressOfOp>(rvalue)) {
+    auto sourcePlace =
+        dyn_cast_or_null<rust::mir::PlaceOp>(childAt(addressOf, 0));
+    if (!sourcePlace)
+      return assign.emitError("expected address_of source place");
+
+    std::optional<PlaceAddress> address =
+        materializePlaceAddress(sourcePlace, slots);
+    if (!address)
+      return assign.emitError("failed to materialize address_of source");
+
+    auto rawPtrType = dyn_cast<rust::mir::TypedRawPtrType>(dest->elementType);
+    if (!rawPtrType)
+      return assign.emitError("address_of destination is not a typed raw "
+                              "pointer");
+    if (address->elementType != rawPtrType.getPointeeType())
+      return assign.emitError("address_of source type does not match "
+                              "destination");
+
+    Value result = mlir::rust::createOp<rust::mir::RawAddressOp>(
+                       builder, assign.getLoc(), dest->elementType,
+                       address->slot, addressOf.getRawPtrKindAttr(),
+                       addressOf.getMutabilityAttr(), assign.getSpanAttr())
                        .getResult();
     createStore(builder, assign.getLoc(), result, *dest);
     return success();

@@ -43,4 +43,18 @@ def RustTyped_ArrayType : RustTyped_Type<"TypedArray", "array",
   let assemblyFormat = "`<` $elementType `,` $length `>`";
 }
 
+def RustTyped_RefType : RustTyped_Type<"TypedRef", "ref"> {
+  let summary = "Typed Rust reference";
+  let parameters = (ins StringRefParameter<"Rust reference mutability">:$mutability,
+                        "Type":$pointeeType);
+  let assemblyFormat = "`<` $mutability `,` $pointeeType `>`";
+}
+
+def RustTyped_RawPtrType : RustTyped_Type<"TypedRawPtr", "rawptr"> {
+  let summary = "Typed Rust raw pointer";
+  let parameters = (ins StringRefParameter<"Rust raw pointer mutability">:$mutability,
+                        "Type":$pointeeType);
+  let assemblyFormat = "`<` $mutability `,` $pointeeType `>`";
+}
+
 #endif // MLIR_DIALECT_RUST_TYPED_IR_RUSTTYPEDTYPES_TD

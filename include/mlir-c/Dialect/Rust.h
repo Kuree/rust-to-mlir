@@ -59,6 +59,12 @@ MLIR_CAPI_EXPORTED MlirType rustTypedTupleTypeGet(MlirContext context,
 MLIR_CAPI_EXPORTED MlirType rustTypedArrayTypeGet(MlirContext context,
                                                   MlirType elementType,
                                                   uint64_t length);
+MLIR_CAPI_EXPORTED MlirType rustTypedRefTypeGet(MlirContext context,
+                                                MlirStringRef mutability,
+                                                MlirType pointeeType);
+MLIR_CAPI_EXPORTED MlirType rustTypedRawPtrTypeGet(MlirContext context,
+                                                   MlirStringRef mutability,
+                                                   MlirType pointeeType);
 
 MLIR_CAPI_EXPORTED MlirAttribute rustMirSwitchTargetsAttrGet(
     MlirContext context, int64_t otherwise, intptr_t numBranches,
@@ -67,8 +73,16 @@ MLIR_CAPI_EXPORTED MlirAttribute rustMirSwitchTargetsAttrGet(
 MLIR_CAPI_EXPORTED MlirOperation rustMirProjectionCreate(MlirLocation location,
                                                          MlirStringRef kind,
                                                          MlirStringRef debug);
+MLIR_CAPI_EXPORTED MlirOperation
+rustMirProjectionDerefCreate(MlirLocation location);
 MLIR_CAPI_EXPORTED MlirOperation rustMirProjectionFieldCreate(
     MlirLocation location, int64_t index, MlirStringRef type);
+MLIR_CAPI_EXPORTED MlirOperation
+rustMirProjectionIndexCreate(MlirLocation location, int64_t local);
+MLIR_CAPI_EXPORTED MlirOperation rustMirProjectionConstantIndexCreate(
+    MlirLocation location, int64_t offset, int64_t minLength, bool fromEnd);
+MLIR_CAPI_EXPORTED MlirOperation rustMirProjectionSubsliceCreate(
+    MlirLocation location, int64_t from, int64_t to, bool fromEnd);
 MLIR_CAPI_EXPORTED MlirOperation
 rustMirPlaceCreate(MlirLocation location, int64_t local,
                    intptr_t numProjections,
@@ -96,6 +110,12 @@ MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueAggregateCreate(
     intptr_t numOperands, MlirOperation const *operands);
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueUseCreate(MlirLocation location,
                                                         MlirOperation operand);
+MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueRefCreate(
+    MlirLocation location, MlirStringRef rustRegion, MlirStringRef borrowKind,
+    MlirStringRef mutability, MlirOperation place, MlirStringRef debug);
+MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueAddressOfCreate(
+    MlirLocation location, MlirStringRef rawPtrKind, MlirStringRef mutability,
+    MlirOperation place, MlirStringRef debug);
 MLIR_CAPI_EXPORTED MlirOperation rustMirDebugOpCreate(
     MlirLocation location, MlirStringRef opName, MlirStringRef kind,
     MlirStringRef debug);
