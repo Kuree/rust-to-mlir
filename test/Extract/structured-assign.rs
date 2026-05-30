@@ -1,11 +1,12 @@
-// RUN: %rust_mir_extract --crate-root %s --emit-ndjson | FileCheck %s
+// RUN: %rust_mir_extract --crate-root %s -S | FileCheck %s
 
 pub fn mask(a: usize, b: usize) -> usize {
     a & b
 }
 
-// CHECK: "record":"statement","kind":"Assign"
-// CHECK-SAME: "place":{"debug":"_0","local":0,"projection":[]}
-// CHECK-SAME: "rvalue":{"kind":"BinaryOp","op":"BitAnd"
-// CHECK-SAME: "lhs":{"kind":"Copy","debug":"Copy(_1)","place":{"debug":"_1","local":1,"projection":[]}}
-// CHECK-SAME: "rhs":{"kind":"Copy","debug":"Copy(_2)","place":{"debug":"_2","local":2,"projection":[]}}
+// CHECK: rust.mir.assign
+// CHECK-SAME: place = {local = 0 : i64, projection = []}
+// CHECK-SAME: rvalue = {kind = "BinaryOp"
+// CHECK-SAME: lhs = {kind = "Copy", place = {local = 1 : i64, projection = []}}
+// CHECK-SAME: op = "BitAnd"
+// CHECK-SAME: rhs = {kind = "Copy", place = {local = 2 : i64, projection = []}}

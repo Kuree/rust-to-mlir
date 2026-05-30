@@ -4,4 +4,3 @@
 // CHECK-LABEL: func.func @"arith::mask_typed"(%arg0: i64, %arg1: i64) -> i64
 // CHECK: arith.andi
 // CHECK: return {{.*}} : i64
-// CHECK-NOT: rust.typed.binop

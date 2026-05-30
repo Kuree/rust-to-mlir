@@ -43,12 +43,22 @@ find_program(RUST_TO_LLVM_RUSTC_EXECUTABLE
   HINTS "$ENV{HOME}/.cargo/bin"
   DOC "Path to the rustc executable used by rust-mir-extract and lit tests")
 
-if(RUST_TO_LLVM_CARGO_EXECUTABLE)
-  message(STATUS "Using Cargo executable: ${RUST_TO_LLVM_CARGO_EXECUTABLE}")
+if(NOT RUST_TO_LLVM_CARGO_EXECUTABLE OR
+   NOT EXISTS "${RUST_TO_LLVM_CARGO_EXECUTABLE}")
+  message(FATAL_ERROR
+    "RustToLLVM requires Cargo to build rust-mir-extract. "
+    "Install Cargo or configure RUST_TO_LLVM_CARGO_EXECUTABLE.")
 endif()
-if(RUST_TO_LLVM_RUSTC_EXECUTABLE)
-  message(STATUS "Using rustc executable: ${RUST_TO_LLVM_RUSTC_EXECUTABLE}")
+
+if(NOT RUST_TO_LLVM_RUSTC_EXECUTABLE OR
+   NOT EXISTS "${RUST_TO_LLVM_RUSTC_EXECUTABLE}")
+  message(FATAL_ERROR
+    "RustToLLVM requires rustc to build and run rust-mir-extract. "
+    "Install rustc or configure RUST_TO_LLVM_RUSTC_EXECUTABLE.")
 endif()
+
+message(STATUS "Using Cargo executable: ${RUST_TO_LLVM_CARGO_EXECUTABLE}")
+message(STATUS "Using rustc executable: ${RUST_TO_LLVM_RUSTC_EXECUTABLE}")
 
 include_directories(${LLVM_INCLUDE_DIRS})
 include_directories(${MLIR_INCLUDE_DIRS})

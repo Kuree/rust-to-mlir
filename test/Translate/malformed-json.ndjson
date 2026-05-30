@@ -1,7 +1,0 @@
-// RUN: not rust-translate --from-ndjson %s 2>&1 | FileCheck %s
-
-{"record":"module","crate":"bad"}
-{this is not json}
-
-// CHECK: invalid JSON on line
-

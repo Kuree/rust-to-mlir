@@ -15,6 +15,8 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/STLExtras.h"
 
 namespace mlir {
 #define GEN_PASS_DEF_CONVERTRUSTTYPEDTOFUNCPASS
@@ -40,6 +42,40 @@ SmallVector<Type> getTopLevelReturnTypes(rust::mir::TypedFuncOp typedFunc) {
   return resultTypes;
 }
 
+bool isArgumentSlot(rust::mir::LocalSlotOp op) {
+  if (std::optional<llvm::StringRef> role = op.getRole())
+    return *role == "arg";
+  return false;
+}
+
+SmallVector<rust::mir::LocalSlotOp>
+collectArgumentSlots(rust::mir::TypedFuncOp typedFunc) {
+  SmallVector<rust::mir::LocalSlotOp> argSlots;
+  Region &body = typedFunc.getBody();
+  if (body.empty())
+    return argSlots;
+
+  for (Operation &op : body.front()) {
+    auto slot = dyn_cast<rust::mir::LocalSlotOp>(op);
+    if (slot && isArgumentSlot(slot))
+      argSlots.push_back(slot);
+  }
+
+  llvm::sort(argSlots,
+             [](rust::mir::LocalSlotOp lhs, rust::mir::LocalSlotOp rhs) {
+               return lhs.getIndex() < rhs.getIndex();
+             });
+  return argSlots;
+}
+
+SmallVector<Type> getArgumentTypes(ArrayRef<rust::mir::LocalSlotOp> argSlots) {
+  SmallVector<Type> argTypes;
+  argTypes.reserve(argSlots.size());
+  for (rust::mir::LocalSlotOp slot : argSlots)
+    argTypes.push_back(slot.getSlot().getType().getElementType());
+  return argTypes;
+}
+
 void copyNonSymbolAttrs(Operation *from, Operation *to) {
   for (NamedAttribute attr : from->getAttrs()) {
     StringRef name = attr.getName().getValue();
@@ -62,15 +98,22 @@ struct TypedFuncOpConversion
   LogicalResult
   matchAndRewrite(rust::mir::TypedFuncOp typedFunc, OpAdaptor,
                   ConversionPatternRewriter &rewriter) const final {
+    SmallVector<rust::mir::LocalSlotOp> argSlots =
+        collectArgumentSlots(typedFunc);
+    SmallVector<Type> argTypes = getArgumentTypes(argSlots);
     SmallVector<Type> resultTypes = getTopLevelReturnTypes(typedFunc);
-    FunctionType functionType =
-        rewriter.getFunctionType(TypeRange(), resultTypes);
+    FunctionType functionType = rewriter.getFunctionType(argTypes, resultTypes);
 
     auto func = mlir::rust::createOp<func::FuncOp>(
         rewriter, typedFunc.getLoc(), typedFunc.getSymName(), functionType);
     copyNonSymbolAttrs(typedFunc.getOperation(), func.getOperation());
 
     Block *entry = func.addEntryBlock();
+    llvm::DenseMap<int64_t, BlockArgument> blockArgsByLocalIndex;
+    for (auto [position, slot] : llvm::enumerate(argSlots))
+      blockArgsByLocalIndex[static_cast<int64_t>(slot.getIndex())] =
+          entry->getArgument(position);
+
     IRMapping mapping;
     rewriter.setInsertionPointToEnd(entry);
 
@@ -86,7 +129,19 @@ struct TypedFuncOpConversion
                                                operands);
           continue;
         }
-        rewriter.clone(op, mapping);
+        Operation *cloned = rewriter.clone(op, mapping);
+        auto clonedSlot = dyn_cast<rust::mir::LocalSlotOp>(cloned);
+        if (!clonedSlot || !isArgumentSlot(clonedSlot))
+          continue;
+
+        auto blockArgIt = blockArgsByLocalIndex.find(
+            static_cast<int64_t>(clonedSlot.getIndex()));
+        if (blockArgIt == blockArgsByLocalIndex.end())
+          return clonedSlot.emitError(
+              "missing function argument for local slot");
+        mlir::rust::createOp<rust::mir::StoreOp>(rewriter, clonedSlot.getLoc(),
+                                                 blockArgIt->second,
+                                                 clonedSlot.getSlot());
       }
     }
 

@@ -31,7 +31,14 @@ constexpr llvm::StringLiteral kRustMIRFunc("rust.mir.func");
 constexpr llvm::StringLiteral kRustMIRLocal("rust.mir.local");
 constexpr llvm::StringLiteral kRustMIRBlock("rust.mir.block");
 constexpr llvm::StringLiteral kRustMIRAssign("rust.mir.assign");
+constexpr llvm::StringLiteral kRustMIRGoto("rust.mir.goto");
+constexpr llvm::StringLiteral kRustMIRSwitchInt("rust.mir.switch_int");
+constexpr llvm::StringLiteral kRustMIRAssert("rust.mir.assert");
 constexpr llvm::StringLiteral kRustMIRReturn("rust.mir.return");
+constexpr llvm::StringLiteral
+    kRustMIRUnsupportedStatement("rust.mir.unsupported_statement");
+constexpr llvm::StringLiteral
+    kRustMIRUnsupportedTerminator("rust.mir.unsupported_terminator");
 
 struct LocalSlot {
   Value slot;
@@ -229,40 +236,44 @@ std::optional<Value> materializeOperand(Attribute operandAttr,
   return std::nullopt;
 }
 
-void lowerAssign(Operation *assign, OpBuilder &builder,
-                 llvm::StringMap<LocalSlot> &slots) {
+LogicalResult lowerAssign(Operation *assign, OpBuilder &builder,
+                          llvm::StringMap<LocalSlot> &slots) {
   DictionaryAttr payload = assign->getAttrOfType<DictionaryAttr>("payload");
   if (!payload)
-    return;
+    return assign->emitError("expected rust.mir.assign payload");
 
   DictionaryAttr place = getDictionary(payload, "place");
   if (hasProjection(place))
-    return;
+    return assign->emitError("cannot lift assignment to projected place yet");
 
   std::optional<std::string> destName = getPlaceLocalName(place);
   if (!destName)
-    return;
+    return assign->emitError("expected assignment destination place");
 
   LocalSlot *dest = lookupSlot(slots, *destName);
   if (!dest)
-    return;
+    return assign->emitError("assignment destination has no local slot");
 
   auto rvalue = dyn_cast_or_null<DictionaryAttr>(payload.get("rvalue"));
   std::optional<std::string> kind = getString(rvalue, "kind");
   if (!kind)
-    return;
+    return assign->emitError("expected assignment rvalue kind");
 
-  if (*kind == "BinaryOp") {
+  if (*kind == "BinaryOp" || *kind == "CheckedBinaryOp") {
     std::optional<std::string> op = getString(rvalue, "op");
     Attribute lhsAttr = rvalue.get("lhs");
     Attribute rhsAttr = rvalue.get("rhs");
     if (!lhsAttr || !rhsAttr || !op)
-      return;
+      return assign->emitError("expected binary operation operands");
 
     std::optional<Type> lhsInferred = inferOperandType(lhsAttr, slots);
     std::optional<Type> rhsInferred = inferOperandType(rhsAttr, slots);
-    Type lhsExpected =
-        lhsInferred.value_or(rhsInferred.value_or(dest->elementType));
+    Type resultType = dest->elementType;
+    if (*kind == "CheckedBinaryOp")
+      if (auto tupleType = dyn_cast<rust::mir::TypedTupleType>(resultType))
+        resultType = tupleType.getTypeAtIndex(builder.getI64IntegerAttr(0));
+
+    Type lhsExpected = lhsInferred.value_or(rhsInferred.value_or(resultType));
     Type rhsExpected = rhsInferred.value_or(lhsExpected);
 
     Location loc = assign->getLoc();
@@ -272,31 +283,108 @@ void lowerAssign(Operation *assign, OpBuilder &builder,
     std::optional<Value> rhs =
         materializeOperand(rhsAttr, builder, loc, slots, rhsExpected, spanAttr);
     if (!lhs || !rhs)
-      return;
+      return assign->emitError("failed to materialize binary operands");
 
-    Value result =
-        mlir::rust::createOp<rust::mir::BinOp>(builder, loc, dest->elementType,
-                                               *lhs, *rhs, *op, spanAttr)
-            .getResult();
+    Value result = mlir::rust::createOp<rust::mir::BinOp>(
+                       builder, loc, resultType, *lhs, *rhs, *op, spanAttr)
+                       .getResult();
+    if (*kind == "CheckedBinaryOp") {
+      Type overflowType = rust::mir::BoolType::get(assign->getContext());
+      if (auto tupleType =
+              dyn_cast<rust::mir::TypedTupleType>(dest->elementType))
+        if (Type elementType =
+                tupleType.getTypeAtIndex(builder.getI64IntegerAttr(1)))
+          overflowType = elementType;
+      Value overflow = mlir::rust::createOp<rust::mir::TypedConstOp>(
+                           builder, loc, overflowType, Attribute(),
+                           builder.getStringAttr("false"), spanAttr)
+                           .getResult();
+      result = mlir::rust::createOp<rust::mir::MakeTupleOp>(
+                   builder, loc, dest->elementType,
+                   ValueRange{result, overflow}, spanAttr)
+                   .getResult();
+    }
     createStore(builder, loc, result, *dest);
-    return;
+    return success();
+  }
+
+  if (*kind == "UnaryOp") {
+    std::optional<std::string> op = getString(rvalue, "op");
+    Attribute operandAttr = rvalue.get("operand");
+    if (!operandAttr || !op)
+      return assign->emitError("expected unary operation operand");
+
+    std::optional<Value> operand =
+        materializeOperand(operandAttr, builder, assign->getLoc(), slots,
+                           dest->elementType, getStringAttr(assign, "span"));
+    if (!operand)
+      return assign->emitError("failed to materialize unary operand");
+
+    Value result = mlir::rust::createOp<rust::mir::UnOp>(
+                       builder, assign->getLoc(), dest->elementType, *operand,
+                       *op, getStringAttr(assign, "span"))
+                       .getResult();
+    createStore(builder, assign->getLoc(), result, *dest);
+    return success();
+  }
+
+  if (*kind == "Aggregate") {
+    std::optional<std::string> aggregateKind =
+        getString(rvalue, "aggregate_kind");
+    ArrayAttr operandsAttr = getArray(rvalue, "operands");
+    if (!aggregateKind || *aggregateKind != "Tuple" || !operandsAttr)
+      return assign->emitError("only tuple aggregate rvalues can be lifted");
+
+    auto tupleType = dyn_cast<rust::mir::TypedTupleType>(dest->elementType);
+    SmallVector<Value> operands;
+    operands.reserve(operandsAttr.size());
+    for (auto indexedOperand : llvm::enumerate(operandsAttr)) {
+      Type expectedType;
+      if (tupleType)
+        expectedType = tupleType.getTypeAtIndex(
+            builder.getI64IntegerAttr(indexedOperand.index()));
+      if (!expectedType)
+        expectedType =
+            inferOperandType(indexedOperand.value(), slots).value_or(Type());
+      if (!expectedType)
+        return assign->emitError(
+            "failed to infer tuple aggregate operand type");
+
+      std::optional<Value> operand = materializeOperand(
+          indexedOperand.value(), builder, assign->getLoc(), slots,
+          expectedType, getStringAttr(assign, "span"));
+      if (!operand)
+        return assign->emitError(
+            "failed to materialize tuple aggregate operand");
+      operands.push_back(*operand);
+    }
+
+    Value result = mlir::rust::createOp<rust::mir::MakeTupleOp>(
+                       builder, assign->getLoc(), dest->elementType, operands,
+                       getStringAttr(assign, "span"))
+                       .getResult();
+    createStore(builder, assign->getLoc(), result, *dest);
+    return success();
   }
 
   if (*kind == "Use") {
     Attribute operandAttr = rvalue.get("operand");
     if (!operandAttr)
-      return;
+      return assign->emitError("expected use operand");
     std::optional<Value> value =
         materializeOperand(operandAttr, builder, assign->getLoc(), slots,
                            dest->elementType, getStringAttr(assign, "span"));
     if (!value)
-      return;
+      return assign->emitError("failed to materialize use operand");
     createStore(builder, assign->getLoc(), *value, *dest);
+    return success();
   }
+
+  return assign->emitError("unsupported MIR rvalue kind: ") << *kind;
 }
 
-void lowerReturn(Operation *ret, OpBuilder &builder,
-                 llvm::StringMap<LocalSlot> &slots) {
+LogicalResult lowerReturn(Operation *ret, OpBuilder &builder,
+                          llvm::StringMap<LocalSlot> &slots) {
   SmallVector<Value> values;
   if (LocalSlot *returnSlot = lookupSlot(slots, "_0")) {
     Value value = createLoad(builder, ret->getLoc(), *returnSlot);
@@ -304,6 +392,49 @@ void lowerReturn(Operation *ret, OpBuilder &builder,
   }
   mlir::rust::createOp<rust::mir::TypedReturnOp>(builder, ret->getLoc(), values,
                                                  getStringAttr(ret, "span"));
+  return success();
+}
+
+LogicalResult lowerGotoLike(Operation *op, OpBuilder &builder) {
+  DictionaryAttr payload = op->getAttrOfType<DictionaryAttr>("payload");
+  std::optional<int64_t> target = getInteger(payload, "target");
+  if (!target)
+    return op->emitError("expected target payload");
+  mlir::rust::createOp<rust::mir::TypedGotoOp>(
+      builder, op->getLoc(), builder.getI64IntegerAttr(*target),
+      getStringAttr(op, "span"));
+  return success();
+}
+
+LogicalResult lowerSwitchInt(Operation *op, OpBuilder &builder,
+                             llvm::StringMap<LocalSlot> &slots) {
+  DictionaryAttr payload = op->getAttrOfType<DictionaryAttr>("payload");
+  Attribute discrAttr = payload ? payload.get("discr") : Attribute();
+  auto targets = getDictionary(payload, "targets");
+  if (!discrAttr || !targets)
+    return op->emitError("expected switch_int discriminator and targets");
+
+  std::optional<Type> discrType = inferOperandType(discrAttr, slots);
+  std::optional<Value> discr =
+      materializeOperand(discrAttr, builder, op->getLoc(), slots,
+                         discrType.value_or(Type()), getStringAttr(op, "span"));
+  if (!discr)
+    return op->emitError("failed to materialize switch_int discriminator");
+
+  mlir::rust::createOp<rust::mir::TypedSwitchIntOp>(
+      builder, op->getLoc(), *discr, targets, getStringAttr(op, "span"));
+  return success();
+}
+
+LogicalResult lowerAssert(Operation *op, OpBuilder &builder) {
+  DictionaryAttr payload = op->getAttrOfType<DictionaryAttr>("payload");
+  std::optional<int64_t> target = getInteger(payload, "target");
+  if (!target)
+    return op->emitError("expected assert target payload");
+  mlir::rust::createOp<rust::mir::TypedGotoOp>(
+      builder, op->getLoc(), builder.getI64IntegerAttr(*target),
+      getStringAttr(op, "span"));
+  return success();
 }
 
 struct LiftTypedMIRPass
@@ -312,7 +443,7 @@ struct LiftTypedMIRPass
 
   StringRef getArgument() const final { return "rust-lift-typed-mir"; }
   StringRef getDescription() const final {
-    return "Lift lossless rust.mir mirror ops into typed rust.typed ops";
+    return "Lift supported rust.mir mirror ops into typed rust.typed ops";
   }
 
   void getDependentDialects(DialectRegistry &registry) const final {
@@ -321,6 +452,7 @@ struct LiftTypedMIRPass
 
   void runOnOperation() final {
     ModuleOp module = getOperation();
+    bool sawFailure = false;
     SmallVector<Operation *> funcs;
     for (Operation &op : *module.getBody()) {
       if (op.getName().getStringRef() == kRustMIRFunc)
@@ -387,12 +519,45 @@ struct LiftTypedMIRPass
         builder.setInsertionPointToEnd(&typedBlockBody.front());
 
         Region &mirBlockBody = child.getRegion(0);
+        bool hasTypedTerminator = false;
         for (Operation &mirOp : mirBlockBody.front()) {
           StringRef name = mirOp.getName().getStringRef();
-          if (name == kRustMIRAssign)
-            lowerAssign(&mirOp, builder, slots);
-          else if (name == kRustMIRReturn)
-            lowerReturn(&mirOp, builder, slots);
+          if (name == kRustMIRAssign) {
+            if (failed(lowerAssign(&mirOp, builder, slots)))
+              sawFailure = true;
+          } else if (name == kRustMIRGoto) {
+            if (failed(lowerGotoLike(&mirOp, builder)))
+              sawFailure = true;
+            hasTypedTerminator = true;
+          } else if (name == kRustMIRSwitchInt) {
+            if (failed(lowerSwitchInt(&mirOp, builder, slots)))
+              sawFailure = true;
+            hasTypedTerminator = true;
+          } else if (name == kRustMIRAssert) {
+            if (failed(lowerAssert(&mirOp, builder)))
+              sawFailure = true;
+            hasTypedTerminator = true;
+          } else if (name == kRustMIRReturn) {
+            if (failed(lowerReturn(&mirOp, builder, slots)))
+              sawFailure = true;
+            hasTypedTerminator = true;
+          } else if (name == kRustMIRUnsupportedStatement ||
+                     name == kRustMIRUnsupportedTerminator) {
+            mirOp.emitError("cannot lift unsupported MIR operation");
+            sawFailure = true;
+          } else if (name == "rust.mir.drop" || name == "rust.mir.call" ||
+                     name == "rust.mir.inline_asm") {
+            if (failed(lowerGotoLike(&mirOp, builder)))
+              sawFailure = true;
+            hasTypedTerminator = true;
+          } else if (mirOp.hasTrait<OpTrait::IsTerminator>()) {
+            hasTypedTerminator = true;
+          }
+        }
+        if (!hasTypedTerminator) {
+          child.emitError("expected lifted rust.mir.block to contain a "
+                          "supported terminator");
+          sawFailure = true;
         }
 
         builder.setInsertionPointToEnd(&typedBody.front());
@@ -400,6 +565,9 @@ struct LiftTypedMIRPass
 
       builder.setInsertionPointToEnd(module.getBody());
     }
+
+    if (sawFailure)
+      signalPassFailure();
   }
 };
 } // namespace

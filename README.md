@@ -3,10 +3,10 @@
 RustToLLVM is an out-of-tree MLIR project for importing Rust MIR, as exposed by
 `rustc_public`, into a project-owned `rust` MLIR dialect.
 
-The stable boundary is this repository's MLIR dialect and NDJSON stream format.
-`rustc_public` is still compiler-private. The extractor is pinned by
-`rust-toolchain.toml`; update that file and the expected NDJSON tests together
-when moving to a newer Rust compiler.
+The stable boundary is this repository's MLIR dialect and MLIR bytecode/text
+emitted by `rust-mir-extract`. `rustc_public` is still compiler-private. The
+extractor is pinned by `rust-toolchain.toml`; update that file and the expected
+MLIR tests together when moving to a newer Rust compiler.
 
 ## Build
 
@@ -36,21 +36,30 @@ ninja -C build check-rust-to-llvm
 The configured Cargo and rustc paths are also available in lit tests as
 `%cargo` and `%rustc`.
 
-## Translate NDJSON
+## Extract Rust MIR
 
 ```sh
-build/bin/rust-translate --from-ndjson test/Inputs/add.ndjson
+build/bin/rust-mir-extract --crate-root test/Inputs/arith.rs --emit-bytecode -o /tmp/arith.mlirbc
+build/bin/rust-opt /tmp/arith.mlirbc --rust-lift-typed-mir
 ```
 
-The `--rs` and `--cargo` modes invoke `rust-mir-extract`, which requires a
-Rust toolchain with `rustc_public` available through `rustc-dev`. The extractor
-crate has a local Cargo config that sets `RUSTC_BOOTSTRAP=1`, because
-`rustc_public` is still an unstable compiler-private interface.
+Use `-S` to print textual MLIR directly:
 
 ```sh
-build/bin/rust-translate --rs test/Inputs/add.rs \
-  --rust-mir-extract build/bin/rust-mir-extract
+build/bin/rust-mir-extract --crate-root test/Inputs/arith.rs -S
 ```
 
-Add MLIR's builtin `--mlir-print-debuginfo` flag to show imported Rust source
-locations, including start/end ranges when rustc_public provides them.
+For a Cargo package, use Cargo-driven extraction. The extractor runs as
+`RUSTC_WRAPPER`, so crate metadata, target flags, and dependency arguments come
+from Cargo instead of being reconstructed by hand:
+
+```sh
+build/bin/rust-mir-extract --cargo test/Inputs/cargo-basic -S -o /tmp/cargo.mlir
+```
+
+Pass MLIR's builtin `--mlir-print-debuginfo` flag to `rust-opt` to show
+imported Rust source locations, including start/end ranges when rustc_public
+provides them.
+
+The Rust extractor currently uses `dlopen` to load the project C API library
+and is tested on Linux/glibc with LLVM/MLIR 20.

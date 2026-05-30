@@ -15,8 +15,10 @@ class Rust_PayloadOp<string mnemonic, string opSummary> : Rust_Op<mnemonic> {
   let summary = opSummary;
   let description = [{
     This operation mirrors a rustc_public MIR enum variant. The `payload`
-    dictionary preserves the original variant fields in the NDJSON bridge
-    format so that import remains lossless for the current frontend.
+    dictionary carries the structured fields currently understood by the
+    rustc_public importer. Variants that are not modeled yet are imported as
+    explicit unsupported operations or unsupported rvalue payloads so later
+    passes fail closed instead of silently lowering incomplete semantics.
   }];
   let arguments = (ins OptionalAttr<DictionaryAttr>:$payload,
                        OptionalAttr<StrAttr>:$span);
@@ -66,6 +68,7 @@ def Rust_CoverageOp : Rust_PayloadOp<"coverage", "MIR StatementKind::Coverage">;
 def Rust_IntrinsicOp : Rust_PayloadOp<"intrinsic", "MIR StatementKind::Intrinsic">;
 def Rust_ConstEvalCounterOp : Rust_PayloadOp<"const_eval_counter", "MIR StatementKind::ConstEvalCounter">;
 def Rust_NopOp : Rust_PayloadOp<"nop", "MIR StatementKind::Nop">;
+def Rust_UnsupportedStatementOp : Rust_PayloadOp<"unsupported_statement", "Unsupported MIR statement">;
 
 // Rvalue variants.
 def Rust_AddressOfOp : Rust_PayloadOp<"address_of", "MIR Rvalue::AddressOf">;
@@ -95,6 +98,7 @@ def Rust_DropOp : Rust_PayloadOp<"drop", "MIR TerminatorKind::Drop">;
 def Rust_CallOp : Rust_PayloadOp<"call", "MIR TerminatorKind::Call">;
 def Rust_AssertOp : Rust_PayloadOp<"assert", "MIR TerminatorKind::Assert">;
 def Rust_InlineAsmOp : Rust_PayloadOp<"inline_asm", "MIR TerminatorKind::InlineAsm">;
+def Rust_UnsupportedTerminatorOp : Rust_PayloadOp<"unsupported_terminator", "Unsupported MIR terminator">;
 
 // MIR leaf structures commonly referenced by payloads.
 def Rust_PlaceOp : Rust_PayloadOp<"place", "MIR Place">;

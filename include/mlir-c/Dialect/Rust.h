@@ -1,0 +1,128 @@
+//===- Rust.h - C API for the Rust dialect ----------------------*- C -*-===//
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
+#ifndef MLIR_C_DIALECT_RUST_H
+#define MLIR_C_DIALECT_RUST_H
+
+#include "mlir-c/IR.h"
+#include "mlir-c/Support.h"
+#include <stdbool.h>
+#include <stdint.h>
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+MLIR_DECLARE_CAPI_DIALECT_REGISTRATION(RustMIR, rust);
+
+MLIR_CAPI_EXPORTED MlirContext rustMlirContextCreate(void);
+MLIR_CAPI_EXPORTED void rustMlirContextDestroy(MlirContext context);
+MLIR_CAPI_EXPORTED MlirLocation rustMlirLocationUnknownGet(MlirContext context);
+MLIR_CAPI_EXPORTED MlirLocation
+rustMlirLocationFromRustSpan(MlirContext context, MlirStringRef span);
+
+MLIR_CAPI_EXPORTED MlirModule rustMlirModuleCreate(MlirLocation location);
+MLIR_CAPI_EXPORTED void rustMlirModuleDestroy(MlirModule module);
+MLIR_CAPI_EXPORTED MlirOperation rustMlirModuleGetOperation(MlirModule module);
+MLIR_CAPI_EXPORTED MlirBlock rustMlirModuleGetBody(MlirModule module);
+MLIR_CAPI_EXPORTED void rustMlirBlockAppendOwnedOperation(MlirBlock block,
+                                                          MlirOperation op);
+MLIR_CAPI_EXPORTED bool rustMlirOperationVerify(MlirOperation op);
+MLIR_CAPI_EXPORTED bool rustMlirWriteBytecodeToFile(MlirOperation op,
+                                                    MlirStringRef path);
+MLIR_CAPI_EXPORTED bool rustMlirWriteTextToFile(MlirOperation op,
+                                                MlirStringRef path);
+MLIR_CAPI_EXPORTED bool rustMlirMergeTextModulesToFile(
+    intptr_t numInputs, MlirStringRef const *inputPaths, MlirStringRef path,
+    bool emitBytecode);
+
+MLIR_CAPI_EXPORTED void rustMirModuleSetTarget(MlirModule module,
+                                               int64_t pointerWidth,
+                                               MlirStringRef endian);
+
+MLIR_CAPI_EXPORTED MlirType
+rustMirTypeFromRustcPublicString(MlirContext context, MlirStringRef spelling);
+MLIR_CAPI_EXPORTED MlirType rustMirBoolTypeGet(MlirContext context);
+MLIR_CAPI_EXPORTED MlirType rustMirIntTypeGet(MlirContext context,
+                                              MlirStringRef spelling);
+MLIR_CAPI_EXPORTED MlirType rustMirUnitTypeGet(MlirContext context);
+MLIR_CAPI_EXPORTED MlirType rustMirOpaqueTypeGet(MlirContext context,
+                                                 MlirStringRef spelling);
+MLIR_CAPI_EXPORTED MlirType rustTypedSlotTypeGet(MlirContext context,
+                                                 MlirType elementType);
+MLIR_CAPI_EXPORTED MlirType rustTypedTupleTypeGet(MlirContext context,
+                                                  intptr_t numElementTypes,
+                                                  MlirType const *elementTypes);
+
+MLIR_CAPI_EXPORTED MlirAttribute rustMirProjectionAttrGet(MlirContext context,
+                                                          MlirStringRef kind,
+                                                          MlirStringRef debug);
+MLIR_CAPI_EXPORTED MlirAttribute rustMirProjectionFieldAttrGet(
+    MlirContext context, int64_t index, MlirStringRef type);
+MLIR_CAPI_EXPORTED MlirAttribute
+rustMirPlaceAttrGet(MlirContext context, int64_t local, intptr_t numProjections,
+                    MlirAttribute const *projections);
+MLIR_CAPI_EXPORTED MlirAttribute rustMirOperandCopyAttrGet(MlirContext context,
+                                                           MlirAttribute place);
+MLIR_CAPI_EXPORTED MlirAttribute rustMirOperandMoveAttrGet(MlirContext context,
+                                                           MlirAttribute place);
+MLIR_CAPI_EXPORTED MlirAttribute
+rustMirOperandConstantI64AttrGet(MlirContext context, int64_t value,
+                                 MlirStringRef debug, MlirStringRef type);
+MLIR_CAPI_EXPORTED MlirAttribute rustMirOperandDebugAttrGet(
+    MlirContext context, MlirStringRef kind, MlirStringRef debug);
+MLIR_CAPI_EXPORTED MlirAttribute rustMirRvalueBinaryOpAttrGet(
+    MlirContext context, MlirStringRef kind, MlirStringRef op,
+    MlirAttribute lhs, MlirAttribute rhs);
+MLIR_CAPI_EXPORTED MlirAttribute
+rustMirRvalueUnaryOpAttrGet(MlirContext context, MlirStringRef kind,
+                            MlirStringRef op, MlirAttribute operand);
+MLIR_CAPI_EXPORTED MlirAttribute rustMirRvalueAggregateAttrGet(
+    MlirContext context, MlirStringRef kind, MlirStringRef aggregateKind,
+    intptr_t numOperands, MlirAttribute const *operands);
+MLIR_CAPI_EXPORTED MlirAttribute rustMirRvalueUseAttrGet(MlirContext context,
+                                                         MlirAttribute operand);
+MLIR_CAPI_EXPORTED MlirAttribute rustMirRvalueDebugAttrGet(MlirContext context,
+                                                           MlirStringRef kind,
+                                                           MlirStringRef debug);
+MLIR_CAPI_EXPORTED MlirAttribute rustMirAssignPayloadAttrGet(
+    MlirContext context, MlirAttribute place, MlirAttribute rvalue);
+MLIR_CAPI_EXPORTED MlirAttribute
+rustMirTargetPayloadAttrGet(MlirContext context, MlirStringRef kind,
+                            int64_t target, MlirStringRef debug);
+MLIR_CAPI_EXPORTED MlirAttribute rustMirSwitchTargetsAttrGet(
+    MlirContext context, int64_t otherwise, intptr_t numBranches,
+    int64_t const *values, int64_t const *targets);
+MLIR_CAPI_EXPORTED MlirAttribute
+rustMirSwitchIntPayloadAttrGet(MlirContext context, MlirAttribute discr,
+                               MlirAttribute targets, MlirStringRef debug);
+MLIR_CAPI_EXPORTED MlirAttribute
+rustMirAssertPayloadAttrGet(MlirContext context, MlirAttribute cond,
+                            bool expected, int64_t target, MlirStringRef debug);
+
+MLIR_CAPI_EXPORTED MlirOperation rustMirFuncCreate(
+    MlirLocation location, MlirStringRef symName, MlirStringRef rustName,
+    MlirStringRef signature, int64_t argCount, MlirStringRef itemKind);
+MLIR_CAPI_EXPORTED MlirOperation rustMirBlockCreate(MlirLocation location,
+                                                    int64_t index);
+MLIR_CAPI_EXPORTED MlirBlock rustMirOperationGetBodyBlock(MlirOperation op);
+MLIR_CAPI_EXPORTED MlirOperation rustMirLocalCreate(
+    MlirLocation location, int64_t index, MlirStringRef name,
+    MlirStringRef role, MlirType rustType, MlirStringRef mutability);
+MLIR_CAPI_EXPORTED MlirOperation rustMirAssignCreate(MlirLocation location,
+                                                     int64_t index,
+                                                     MlirAttribute payload);
+MLIR_CAPI_EXPORTED MlirOperation rustMirReturnCreate(MlirLocation location);
+MLIR_CAPI_EXPORTED MlirOperation rustMirPayloadOpCreate(MlirLocation location,
+                                                        MlirStringRef opName,
+                                                        MlirStringRef mirKind,
+                                                        MlirAttribute payload);
+
+#ifdef __cplusplus
+}
+#endif
+
+#endif // MLIR_C_DIALECT_RUST_H

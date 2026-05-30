@@ -112,7 +112,7 @@ def RustTyped_TypedGotoOp : RustTyped_Op<"goto"> {
 
 def RustTyped_TypedSwitchIntOp : RustTyped_Op<"switch_int"> {
   let summary = "Typed Rust MIR switch-int terminator placeholder";
-  let arguments = (ins AnyInteger:$discr, OptionalAttr<DictionaryAttr>:$targets,
+  let arguments = (ins AnyType:$discr, OptionalAttr<DictionaryAttr>:$targets,
                        OptionalAttr<StrAttr>:$span);
   let assemblyFormat = "$discr attr-dict `:` type($discr)";
 }
