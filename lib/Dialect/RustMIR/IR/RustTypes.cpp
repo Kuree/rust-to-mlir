@@ -17,8 +17,115 @@
 using namespace mlir;
 using namespace mlir::rust::mir;
 
+namespace mlir::rust::mir::detail {
+/// Mutable storage backing the identified, recursion-capable AdtType. Uniqued
+/// on `name` only; `variants` is the mutable body set once via `mutate`.
+struct AdtTypeStorage : public TypeStorage {
+  using KeyTy = StringRef;
+
+  explicit AdtTypeStorage(StringRef name) : name(name) {}
+
+  bool operator==(const KeyTy &key) const { return key == name; }
+
+  static llvm::hash_code hashKey(const KeyTy &key) {
+    return llvm::hash_value(key);
+  }
+
+  static AdtTypeStorage *construct(TypeStorageAllocator &allocator,
+                                   const KeyTy &key) {
+    return new (allocator.allocate<AdtTypeStorage>())
+        AdtTypeStorage(allocator.copyInto(key));
+  }
+
+  LogicalResult mutate(TypeStorageAllocator &allocator,
+                       ArrayRef<Type> newVariants) {
+    if (initialized)
+      return success(ArrayRef<Type>(variants) == newVariants);
+    variants = allocator.copyInto(newVariants);
+    initialized = true;
+    return success();
+  }
+
+  StringRef name;
+  ArrayRef<Type> variants;
+  bool initialized = false;
+};
+} // namespace mlir::rust::mir::detail
+
 #define GET_TYPEDEF_CLASSES
 #include "mlir/Dialect/RustMIR/IR/RustOpsTypes.cpp.inc"
+
+StringRef AdtType::getName() const { return getImpl()->name; }
+
+ArrayRef<Type> AdtType::getVariants() const { return getImpl()->variants; }
+
+AdtType AdtType::getIdentified(MLIRContext *context, StringRef name) {
+  return Base::get(context, name);
+}
+
+LogicalResult AdtType::setBody(ArrayRef<Type> variants) {
+  return Base::mutate(variants);
+}
+
+bool AdtType::isInitialized() const { return getImpl()->initialized; }
+
+Type AdtType::parse(AsmParser &parser) {
+  std::string name;
+  if (parser.parseLess() || parser.parseString(&name))
+    return {};
+
+  AdtType type = AdtType::getIdentified(parser.getContext(), name);
+
+  // An optional `, [ <variant-types> ]` body follows. Guard against cycles so a
+  // self-referential body is parsed only once.
+  if (succeeded(parser.parseOptionalComma())) {
+    FailureOr<AsmParser::CyclicParseReset> cyclic =
+        parser.tryStartCyclicParse(type);
+    if (failed(cyclic)) {
+      parser.emitError(parser.getCurrentLocation(),
+                       "unexpected recursive ADT body");
+      return {};
+    }
+
+    SmallVector<Type> variants;
+    if (parser.parseLSquare())
+      return {};
+    if (failed(parser.parseOptionalRSquare())) {
+      do {
+        Type variant;
+        if (parser.parseType(variant))
+          return {};
+        variants.push_back(variant);
+      } while (succeeded(parser.parseOptionalComma()));
+      if (parser.parseRSquare())
+        return {};
+    }
+    if (failed(type.setBody(variants))) {
+      parser.emitError(parser.getCurrentLocation(),
+                       "ADT body conflicts with an existing definition");
+      return {};
+    }
+  }
+
+  if (parser.parseGreater())
+    return {};
+  return type;
+}
+
+void AdtType::print(AsmPrinter &printer) const {
+  printer << "<\"" << getName() << "\"";
+  // Only emit the body the first time the type is reached; a cyclic back-edge
+  // prints just the name reference.
+  FailureOr<AsmPrinter::CyclicPrintReset> cyclic =
+      printer.tryStartCyclicPrint(*this);
+  if (succeeded(cyclic) && isInitialized()) {
+    printer << ", [";
+    llvm::interleaveComma(getVariants(), printer,
+                          [&](Type variant) { printer << variant; });
+    printer << "]";
+  }
+  printer << ">";
+}
 
 IntType IntType::getFromSpelling(MLIRContext *context, llvm::StringRef spelling) {
   if (spelling == "isize")

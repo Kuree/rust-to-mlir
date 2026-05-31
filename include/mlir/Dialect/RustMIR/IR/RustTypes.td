@@ -94,10 +94,33 @@ def Rust_FnType : Rust_Type<"Fn", "fn"> {
   let assemblyFormat = "`<` $spelling `>`";
 }
 
-def Rust_AdtType : Rust_Type<"Adt", "adt"> {
-  let summary = "Rust ADT type";
-  let parameters = (ins StringRefParameter<"rust ADT spelling">:$spelling);
-  let assemblyFormat = "`<` $spelling `>`";
+def Rust_AdtType : Rust_Type<"Adt", "adt", [MutableType]> {
+  let summary = "Rust nominal ADT type (struct/enum/union)";
+  let description = [{
+    Identified nominal type uniqued on a canonical `name` (the def path plus
+    encoded generic arguments). The `variants` body is mutable so recursive,
+    self-referential ADTs can be built: create the type by name, then set the
+    body. Each variant is a `!rust.typed.tuple` of its field types. A type
+    without a body is uninitialised (opaque until `setBody`).
+  }];
+  let parameters = (ins
+    StringRefParameter<"canonical ADT identity (def path + generic args)">:$name,
+    OptionalArrayRefParameter<"::mlir::Type">:$variants
+  );
+  let storageClass = "AdtTypeStorage";
+  let genStorageClass = 0;
+  let skipDefaultBuilders = 1;
+  let hasCustomAssemblyFormat = 1;
+  let extraClassDeclaration = [{
+    /// Get or create the identified ADT type with the given canonical name.
+    static AdtType getIdentified(::mlir::MLIRContext *context,
+                                 ::llvm::StringRef name);
+    /// Set the variant/field body once. Fails if a different body is already
+    /// set; succeeds if the same body is set again.
+    ::llvm::LogicalResult setBody(::llvm::ArrayRef<::mlir::Type> variants);
+    /// Whether the body has been set.
+    bool isInitialized() const;
+  }];
 }
 
 def Rust_OpaqueType : Rust_Type<"Opaque", "opaque"> {

@@ -128,7 +128,7 @@ Type typeFromRustDebug(MLIRContext *context, StringRef spelling) {
     return rust::mir::TypedTupleType::get(context, ArrayRef<Type>(fields));
   }
   if (s.contains("RigidTy(Adt("))
-    return rust::mir::AdtType::get(context, s);
+    return rust::mir::AdtType::getIdentified(context, s);
   if (s.contains("RigidTy(FnDef("))
     return rust::mir::FnType::get(context, s);
   return rust::mir::OpaqueType::get(context, s);

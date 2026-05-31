@@ -13,7 +13,8 @@ use rustc_public::mir::{
 };
 use rustc_public::target::{Endian, MachineInfo};
 use rustc_public::ty::{
-    Abi, Allocation, ConstantKind, IntTy, RigidTy, Ty, TyConstKind, TyKind, UintTy,
+    Abi, AdtDef, Allocation, ConstantKind, GenericArgKind, GenericArgs, IntTy, RigidTy, Ty,
+    TyConstKind, TyKind, UintTy,
 };
 use rustc_public::CrateItem;
 use std::env;
@@ -107,6 +108,8 @@ type RustMirCharTypeGet = unsafe extern "C" fn(MlirContext) -> MlirType;
 type RustMirUnitTypeGet = unsafe extern "C" fn(MlirContext) -> MlirType;
 type RustMirNeverTypeGet = unsafe extern "C" fn(MlirContext) -> MlirType;
 type RustMirIntTypeGet = unsafe extern "C" fn(MlirContext, MlirStringRef) -> MlirType;
+type RustMirAdtTypeGetIdentified = unsafe extern "C" fn(MlirContext, MlirStringRef) -> MlirType;
+type RustMirAdtTypeSetBody = unsafe extern "C" fn(MlirType, isize, *const MlirType);
 type RustTypedTupleTypeGet = unsafe extern "C" fn(MlirContext, isize, *const MlirType) -> MlirType;
 type RustTypedArrayTypeGet = unsafe extern "C" fn(MlirContext, MlirType, u64) -> MlirType;
 type RustTypedSliceTypeGet = unsafe extern "C" fn(MlirContext, MlirType) -> MlirType;
@@ -271,6 +274,8 @@ struct MlirApi {
     mir_unit_type_get: RustMirUnitTypeGet,
     mir_never_type_get: RustMirNeverTypeGet,
     mir_int_type_get: RustMirIntTypeGet,
+    mir_adt_type_get_identified: RustMirAdtTypeGetIdentified,
+    mir_adt_type_set_body: RustMirAdtTypeSetBody,
     typed_tuple_type_get: RustTypedTupleTypeGet,
     typed_array_type_get: RustTypedArrayTypeGet,
     typed_slice_type_get: RustTypedSliceTypeGet,
@@ -353,6 +358,8 @@ impl MlirApi {
                 mir_unit_type_get: load_symbol(handle, "rustMirUnitTypeGet")?,
                 mir_never_type_get: load_symbol(handle, "rustMirNeverTypeGet")?,
                 mir_int_type_get: load_symbol(handle, "rustMirIntTypeGet")?,
+                mir_adt_type_get_identified: load_symbol(handle, "rustMirAdtTypeGetIdentified")?,
+                mir_adt_type_set_body: load_symbol(handle, "rustMirAdtTypeSetBody")?,
                 typed_tuple_type_get: load_symbol(handle, "rustTypedTupleTypeGet")?,
                 typed_array_type_get: load_symbol(handle, "rustTypedArrayTypeGet")?,
                 typed_slice_type_get: load_symbol(handle, "rustTypedSliceTypeGet")?,
@@ -657,6 +664,17 @@ enum MirType {
     /// Carries the canonical Rust spelling (e.g. "i32", "usize"), derived from
     /// the typed `rustc_public` integer kind rather than its Debug rendering.
     Int(&'static str),
+    /// A nominal ADT (struct/enum/union) with its full structure. `name` is the
+    /// canonical identity (def path + generic args); `variants` holds each
+    /// variant's field types. Built into a recursion-capable identified MLIR
+    /// type via `getIdentified`/`setBody`.
+    Adt {
+        name: String,
+        variants: Vec<Vec<MirType>>,
+    },
+    /// A back-edge to an ADT currently being built (breaks self-referential
+    /// recursion); resolved by name to the same identified MLIR type.
+    AdtRef(String),
     Tuple(Vec<MirType>),
     Array {
         element: Box<MirType>,
@@ -720,6 +738,8 @@ impl MirType {
             Self::Unit => "()".to_string(),
             Self::Never => "!".to_string(),
             Self::Int(spelling) => (*spelling).to_string(),
+            Self::Adt { name, .. } => name.clone(),
+            Self::AdtRef(name) => name.clone(),
             Self::Tuple(elements) => {
                 let elements = elements
                     .iter()
@@ -744,6 +764,11 @@ impl MirType {
     }
 
     fn from_public(ty: Ty) -> Self {
+        let mut building = Vec::new();
+        Self::from_public_rec(ty, &mut building)
+    }
+
+    fn from_public_rec(ty: Ty, building: &mut Vec<String>) -> Self {
         match ty.kind() {
             TyKind::RigidTy(RigidTy::Bool) => Self::Bool,
             TyKind::RigidTy(RigidTy::Char) => Self::Char,
@@ -754,30 +779,131 @@ impl MirType {
             TyKind::RigidTy(RigidTy::Tuple(elements)) => Self::Tuple(
                 elements
                     .iter()
-                    .copied()
-                    .map(Self::from_public)
+                    .map(|element| Self::from_public_rec(*element, building))
                     .collect::<Vec<_>>(),
             ),
             TyKind::RigidTy(RigidTy::Array(element, length)) => match length.eval_target_usize() {
                 Ok(length) => Self::Array {
-                    element: Box::new(Self::from_public(element)),
+                    element: Box::new(Self::from_public_rec(element, building)),
                     length,
                 },
                 Err(_) => Self::Debug(format!("{ty:?}")),
             },
             TyKind::RigidTy(RigidTy::Slice(element)) => Self::Slice {
-                element: Box::new(Self::from_public(element)),
+                element: Box::new(Self::from_public_rec(element, building)),
             },
             TyKind::RigidTy(RigidTy::Ref(_, pointee, mutability)) => Self::Ref {
-                pointee: Box::new(Self::from_public(pointee)),
+                pointee: Box::new(Self::from_public_rec(pointee, building)),
                 mutability: reference_mutability(mutability).to_string(),
             },
             TyKind::RigidTy(RigidTy::RawPtr(pointee, mutability)) => Self::RawPtr {
-                pointee: Box::new(Self::from_public(pointee)),
+                pointee: Box::new(Self::from_public_rec(pointee, building)),
                 mutability: raw_pointer_mutability(mutability).to_string(),
             },
+            TyKind::RigidTy(RigidTy::Adt(def, args)) => {
+                Self::adt_from_public(def, &args, building)
+            }
             _ => Self::Debug(format!("{ty:?}")),
         }
+    }
+
+    fn adt_from_public(def: AdtDef, args: &GenericArgs, building: &mut Vec<String>) -> Self {
+        // Ranges keep a flat usize-tuple shape so existing slice-index lowering
+        // (which reads start/end as usize fields) is preserved. Detection is by
+        // the structured def path, not substring matching of a Debug string.
+        if let Some(field_count) = range_field_count(&def.name()) {
+            return Self::Tuple((0..field_count).map(|_| Self::Int("usize")).collect());
+        }
+
+        let name = adt_key(&def, args);
+        if building.iter().any(|pending| pending == &name) {
+            return Self::AdtRef(name);
+        }
+
+        building.push(name.clone());
+        let variants = def
+            .variants()
+            .iter()
+            .map(|variant| {
+                variant
+                    .fields()
+                    .iter()
+                    .map(|field| Self::from_public_rec(field.ty_with_args(args), building))
+                    .collect::<Vec<_>>()
+            })
+            .collect::<Vec<_>>();
+        building.pop();
+        Self::Adt { name, variants }
+    }
+}
+
+/// Number of usize fields used to model a `core::ops::Range*` family type, or
+/// `None` if the def path is not a range type.
+fn range_field_count(def_name: &str) -> Option<usize> {
+    let segment = def_name.rsplit("::").next().unwrap_or(def_name);
+    let segment = segment.split('<').next().unwrap_or(segment);
+    match segment {
+        "Range" | "RangeInclusive" => Some(2),
+        "RangeFrom" | "RangeTo" | "RangeToInclusive" => Some(1),
+        "RangeFull" => Some(0),
+        _ => None,
+    }
+}
+
+/// Canonical identity for an ADT: its def path plus a structural encoding of the
+/// type generic arguments, so each monomorphization uniques to a distinct type.
+fn adt_key(def: &AdtDef, args: &GenericArgs) -> String {
+    let name = def.name();
+    let base = name.split('<').next().unwrap_or(&name);
+    let type_args: Vec<String> = args
+        .0
+        .iter()
+        .filter_map(|arg| match arg {
+            GenericArgKind::Type(ty) => Some(type_identity(*ty)),
+            _ => None,
+        })
+        .collect();
+    if type_args.is_empty() {
+        base.to_string()
+    } else {
+        format!("{base}<{}>", type_args.join(", "))
+    }
+}
+
+/// Lightweight type identity used to build ADT keys: recurses through generic
+/// arguments by identity only (never expands ADT bodies).
+fn type_identity(ty: Ty) -> String {
+    match ty.kind() {
+        TyKind::RigidTy(RigidTy::Bool) => "bool".to_string(),
+        TyKind::RigidTy(RigidTy::Char) => "char".to_string(),
+        TyKind::RigidTy(RigidTy::Int(int_ty)) => signed_int_spelling(int_ty).to_string(),
+        TyKind::RigidTy(RigidTy::Uint(uint_ty)) => unsigned_int_spelling(uint_ty).to_string(),
+        TyKind::RigidTy(RigidTy::Never) => "!".to_string(),
+        TyKind::RigidTy(RigidTy::Tuple(elements)) if elements.is_empty() => "()".to_string(),
+        TyKind::RigidTy(RigidTy::Tuple(elements)) => format!(
+            "({})",
+            elements
+                .iter()
+                .map(|element| type_identity(*element))
+                .collect::<Vec<_>>()
+                .join(", ")
+        ),
+        TyKind::RigidTy(RigidTy::Array(element, length)) => {
+            let length = length
+                .eval_target_usize()
+                .map(|value| value.to_string())
+                .unwrap_or_else(|_| "_".to_string());
+            format!("[{}; {length}]", type_identity(element))
+        }
+        TyKind::RigidTy(RigidTy::Slice(element)) => format!("[{}]", type_identity(element)),
+        TyKind::RigidTy(RigidTy::Ref(_, pointee, mutability)) => {
+            format!("&{} {}", reference_mutability(mutability), type_identity(pointee))
+        }
+        TyKind::RigidTy(RigidTy::RawPtr(pointee, mutability)) => {
+            format!("*{} {}", raw_pointer_mutability(mutability), type_identity(pointee))
+        }
+        TyKind::RigidTy(RigidTy::Adt(def, args)) => adt_key(&def, &args),
+        _ => format!("{ty:?}"),
     }
 }
 
@@ -1573,6 +1699,40 @@ impl MlirEmitter {
             MirType::Never => unsafe { (self.api.mir_never_type_get)(self.context) },
             MirType::Int(spelling) => unsafe {
                 (self.api.mir_int_type_get)(self.context, mlir_string(spelling))
+            },
+            MirType::Adt { name, variants } => {
+                // Create the identified handle first so self-referential field
+                // types (AdtRef) resolve to the same type, then set the body.
+                let adt = unsafe {
+                    (self.api.mir_adt_type_get_identified)(self.context, mlir_string(name))
+                };
+                let variant_types = variants
+                    .iter()
+                    .map(|fields| {
+                        let field_types = fields
+                            .iter()
+                            .map(|field| self.type_from_mir(field))
+                            .collect::<Vec<_>>();
+                        unsafe {
+                            (self.api.typed_tuple_type_get)(
+                                self.context,
+                                field_types.len() as isize,
+                                field_types.as_ptr(),
+                            )
+                        }
+                    })
+                    .collect::<Vec<_>>();
+                unsafe {
+                    (self.api.mir_adt_type_set_body)(
+                        adt,
+                        variant_types.len() as isize,
+                        variant_types.as_ptr(),
+                    );
+                }
+                adt
+            }
+            MirType::AdtRef(name) => unsafe {
+                (self.api.mir_adt_type_get_identified)(self.context, mlir_string(name))
             },
             MirType::Tuple(elements) => {
                 let element_types = elements

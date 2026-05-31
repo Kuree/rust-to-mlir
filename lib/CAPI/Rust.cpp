@@ -192,7 +192,7 @@ Type classifyRustType(MLIRContext *context, llvm::StringRef spelling) {
     return rustmir::TypedTupleType::get(context, ArrayRef<Type>(fields));
   }
   if (s.contains("::"))
-    return rustmir::AdtType::get(context, s);
+    return rustmir::AdtType::getIdentified(context, s);
   return rustmir::OpaqueType::get(context, s);
 }
 
@@ -454,6 +454,22 @@ MlirType rustMirUnitTypeGet(MlirContext context) {
 
 MlirType rustMirNeverTypeGet(MlirContext context) {
   return wrap(rustmir::NeverType::get(unwrap(context)));
+}
+
+MlirType rustMirAdtTypeGetIdentified(MlirContext context, MlirStringRef name) {
+  return wrap(rustmir::AdtType::getIdentified(unwrap(context), unwrap(name)));
+}
+
+void rustMirAdtTypeSetBody(MlirType adt, intptr_t numVariants,
+                           MlirType const *variants) {
+  auto adtType = cast<rustmir::AdtType>(unwrap(adt));
+  SmallVector<Type> variantTypes;
+  variantTypes.reserve(numVariants);
+  for (intptr_t i = 0; i < numVariants; ++i)
+    variantTypes.push_back(unwrap(variants[i]));
+  // Idempotent: setting the identical body again succeeds; only a conflicting
+  // redefinition fails, which the structural key makes impossible here.
+  (void)adtType.setBody(variantTypes);
 }
 
 MlirType rustMirOpaqueTypeGet(MlirContext context, MlirStringRef spelling) {

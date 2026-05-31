@@ -12,6 +12,13 @@
 
 #include "mlir/Dialect/RustMIR/IR/RustEnums.h.inc"
 
+// Hand-written storage backing the mutable, recursion-capable AdtType (defined
+// in RustTypes.cpp). Forward-declared here so the generated type class can name
+// it as its storage class.
+namespace mlir::rust::mir::detail {
+struct AdtTypeStorage;
+} // namespace mlir::rust::mir::detail
+
 #define GET_ATTRDEF_CLASSES
 #include "mlir/Dialect/RustMIR/IR/RustAttrs.h.inc"
 
