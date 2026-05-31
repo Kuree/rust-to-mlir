@@ -5,16 +5,25 @@ set(RUST_MIR_EXTRACT_BINARY
   ${CMAKE_CURRENT_BINARY_DIR}/rust-mir-extract-target/debug/rust-mir-extract${CMAKE_EXECUTABLE_SUFFIX})
 set(RUST_MIR_EXTRACT_OUTPUT
   ${LLVM_RUNTIME_OUTPUT_INTDIR}/rust-mir-extract${CMAKE_EXECUTABLE_SUFFIX})
+set(RUST_RUN_BINARY
+  ${CMAKE_CURRENT_BINARY_DIR}/rust-mir-extract-target/debug/rust-run${CMAKE_EXECUTABLE_SUFFIX})
+set(RUST_RUN_OUTPUT
+  ${LLVM_RUNTIME_OUTPUT_INTDIR}/rust-run${CMAKE_EXECUTABLE_SUFFIX})
+set(RUST_RUN_RUNTIME_LIBRARY
+  ${LLVM_LIBRARY_OUTPUT_INTDIR}/${CMAKE_SHARED_LIBRARY_PREFIX}rust_to_llvm_runtime${CMAKE_SHARED_LIBRARY_SUFFIX})
 
 set(RUST_MIR_EXTRACT_CARGO_ENV
   CARGO_TARGET_DIR=${CMAKE_CURRENT_BINARY_DIR}/rust-mir-extract-target
   RUSTC=${RUST_TO_LLVM_RUSTC_EXECUTABLE}
   RUST_TO_LLVM_CARGO_EXECUTABLE=${RUST_TO_LLVM_CARGO_EXECUTABLE}
   RUST_TO_LLVM_RUSTC_EXECUTABLE=${RUST_TO_LLVM_RUSTC_EXECUTABLE}
-  RUST_TO_LLVM_CAPI_LIBRARY=$<TARGET_FILE:RustToLLVMRustCAPI>)
+  RUST_TO_LLVM_CAPI_LIBRARY=$<TARGET_FILE:RustToLLVMRustCAPI>
+  RUST_TO_LLVM_RUNTIME_LIBRARY=${RUST_RUN_RUNTIME_LIBRARY})
 
 add_custom_command(
-  OUTPUT ${RUST_MIR_EXTRACT_OUTPUT}
+  OUTPUT
+    ${RUST_MIR_EXTRACT_OUTPUT}
+    ${RUST_RUN_OUTPUT}
   COMMAND ${CMAKE_COMMAND} -E env
           ${RUST_MIR_EXTRACT_CARGO_ENV}
           ${RUST_TO_LLVM_CARGO_EXECUTABLE} build
@@ -23,6 +32,9 @@ add_custom_command(
   COMMAND ${CMAKE_COMMAND} -E copy_if_different
           ${RUST_MIR_EXTRACT_BINARY}
           ${RUST_MIR_EXTRACT_OUTPUT}
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+          ${RUST_RUN_BINARY}
+          ${RUST_RUN_OUTPUT}
   WORKING_DIRECTORY ${CMAKE_CURRENT_SOURCE_DIR}/rust-mir-extract
   DEPENDS
     ${PROJECT_SOURCE_DIR}/rust-toolchain.toml
@@ -32,8 +44,12 @@ add_custom_command(
     ${CMAKE_CURRENT_SOURCE_DIR}/rust-mir-extract/build.rs
     ${CMAKE_CURRENT_SOURCE_DIR}/rust-mir-extract/src/lib.rs
     ${CMAKE_CURRENT_SOURCE_DIR}/rust-mir-extract/src/main.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rust-mir-extract/src/bin/rust-run.rs
     RustToLLVMRustCAPI
+    rust-to-llvm-runtime
   COMMENT "Building rust-mir-extract with Cargo"
   VERBATIM)
-add_custom_target(rust-mir-extract
+add_custom_target(rust-mir-extract ALL
   DEPENDS ${RUST_MIR_EXTRACT_OUTPUT})
+add_custom_target(rust-run ALL
+  DEPENDS ${RUST_RUN_OUTPUT})

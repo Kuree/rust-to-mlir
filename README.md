@@ -63,3 +63,20 @@ provides them.
 
 The Rust extractor currently uses `dlopen` to load the project C API library
 and is tested on Linux/glibc with LLVM/MLIR 20.
+
+## Execute Rust Source
+
+Use `rust-run` to extract MIR, lower through the RustToLLVM pipeline, and JIT
+the source crate's `fn main` without writing MLIR to disk:
+
+```sh
+build/bin/rust-run path/to/input.rs
+```
+
+The default entry point is the lowered `rust_to_llvm_main::main_typed` symbol.
+If `main` returns `i32`, `rust-run` uses that value as its process status
+instead of printing it. Pass extra rustc flags after `--`.
+
+The C API also exposes transform and execution hooks for embedding:
+`rustMlirLowerRustToLLVM`, `rustMlirRunPassPipeline`, and
+`rustMlirExecuteMain`.

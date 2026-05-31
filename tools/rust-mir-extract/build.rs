@@ -19,4 +19,7 @@ fn main() {
     if let Ok(capi_library) = std::env::var("RUST_TO_LLVM_CAPI_LIBRARY") {
         println!("cargo:rustc-env=RUST_TO_LLVM_CAPI_LIBRARY={capi_library}");
     }
+    if let Ok(runtime_library) = std::env::var("RUST_TO_LLVM_RUNTIME_LIBRARY") {
+        println!("cargo:rustc-env=RUST_TO_LLVM_RUNTIME_LIBRARY={runtime_library}");
+    }
 }

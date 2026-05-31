@@ -12,3 +12,7 @@ path = "src/lib.rs"
 [[bin]]
 name = "rust-mir-extract"
 path = "src/main.rs"
+
+[[bin]]
+name = "rust-run"
+path = "src/bin/rust-run.rs"

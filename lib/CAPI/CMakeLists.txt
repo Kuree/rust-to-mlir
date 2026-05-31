@@ -8,11 +8,14 @@ target_compile_definitions(RustToLLVMRustCAPI
 )
 target_link_libraries(RustToLLVMRustCAPI
   PRIVATE
+  RustToLLVMSupport
   RustToLLVMRustMIRDialect
   MLIRBytecodeWriter
   MLIRDLTIDialect
+  MLIRExecutionEngine
   MLIRIR
   MLIRParser
+  MLIRPass
   MLIRSupport
   LLVMSupport
 )

@@ -6,32 +6,43 @@
 
 #include "mlir-c/Dialect/Rust.h"
 
+#include "RustToLLVM/Support/Toolchain.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Registration.h"
 #include "mlir/CAPI/Support.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/DLTI/DLTI.h"
+#include "mlir/ExecutionEngine/ExecutionEngine.h"
 #include "mlir/Dialect/RustMIR/IR/RustMIRDialect.h"
 #include "mlir/Dialect/RustMIR/IR/RustOps.h"
 #include "mlir/Dialect/RustMIR/IR/RustTypes.h"
 #include "mlir/IR/Attributes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinOps.h"
+#include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/Location.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/OperationSupport.h"
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/IR/Verifier.h"
 #include "mlir/Parser/Parser.h"
+#include "mlir/Pass/PassManager.h"
+#include "mlir/Pass/PassRegistry.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringRef.h"
+#include "llvm/Support/Error.h"
 #include "llvm/Support/FileSystem.h"
 #include "llvm/Support/Regex.h"
+#include "llvm/Support/TargetSelect.h"
 #include "llvm/Support/raw_ostream.h"
 
 #include <cstring>
+#include <cstdint>
+#include <memory>
+#include <mutex>
 #include <optional>
 #include <string>
 
@@ -56,6 +67,22 @@ struct ParsedSpan {
   unsigned endColumn = 0;
   bool hasEnd = false;
 };
+
+enum class EntryPointResult { Void, I32 };
+
+void ensureRustToLLVMPassesRegistered() {
+  static std::once_flag once;
+  std::call_once(once, [] { rust_to_llvm::registerRustToLLVMPasses(); });
+}
+
+void ensureNativeTargetInitialized() {
+  static std::once_flag once;
+  std::call_once(once, [] {
+    llvm::InitializeNativeTarget();
+    llvm::InitializeNativeTargetAsmParser();
+    llvm::InitializeNativeTargetAsmPrinter();
+  });
+}
 
 std::optional<unsigned> parseUnsigned(llvm::StringRef text) {
   unsigned value = 0;
@@ -181,10 +208,71 @@ StringRef operandDebugOpName(MlirStringRef kind) {
     return "rust.mir.runtime_checks";
   return "rust.mir.unsupported_statement";
 }
+
+std::optional<EntryPointResult> inferEntryPointResult(ModuleOp module,
+                                                      StringRef entryPoint) {
+  mlir::LLVM::LLVMFuncOp func =
+      module.lookupSymbol<mlir::LLVM::LLVMFuncOp>(entryPoint);
+  if (!func) {
+    llvm::errs() << "error: entry point '" << entryPoint
+                 << "' was not found after lowering\n";
+    return std::nullopt;
+  }
+
+  auto resultTypes = func.getResultTypes();
+  if (resultTypes.empty())
+    return EntryPointResult::Void;
+
+  if (resultTypes.size() != 1) {
+    llvm::errs() << "error: entry point '" << entryPoint << "' returns "
+                 << resultTypes.size()
+                 << " values; rustMlirExecuteMain supports void or one i32 "
+                    "status result\n";
+    return std::nullopt;
+  }
+
+  Type resultType = resultTypes.front();
+  if (resultType.isInteger(32))
+    return EntryPointResult::I32;
+  llvm::errs() << "error: unsupported entry point result type ";
+  resultType.print(llvm::errs());
+  llvm::errs() << " for '" << entryPoint
+               << "'; main must return void or i32 status\n";
+  return std::nullopt;
+}
+
+int invokeAndReturnI32Status(ExecutionEngine &engine, StringRef name) {
+  std::int32_t result = 0;
+  llvm::SmallVector<void *> args{&result};
+  if (llvm::Error error = engine.invokePacked(name, args)) {
+    llvm::logAllUnhandledErrors(std::move(error), llvm::errs(), "Error: ");
+    return 1;
+  }
+  return static_cast<int>(result);
+}
+
+int invokeEntryPoint(ExecutionEngine &engine, StringRef entryPoint,
+                     EntryPointResult resultKind) {
+  switch (resultKind) {
+  case EntryPointResult::Void:
+    if (llvm::Error error = engine.invokePacked(entryPoint)) {
+      llvm::logAllUnhandledErrors(std::move(error), llvm::errs(), "Error: ");
+      return 1;
+    }
+    return 0;
+  case EntryPointResult::I32:
+    return invokeAndReturnI32Status(engine, entryPoint);
+  }
+  llvm_unreachable("unknown entry point result kind");
+}
 } // namespace
 
 MlirContext rustMlirContextCreate(void) {
   auto *context = new MLIRContext();
+  DialectRegistry registry;
+  rust_to_llvm::registerRustToLLVMDialects(registry);
+  rust_to_llvm::registerRustToLLVMIRTranslations(registry);
+  context->appendDialectRegistry(registry);
   context->loadDialect<rustmir::RustMIRDialect, DLTIDialect>();
   return wrap(context);
 }
@@ -218,6 +306,14 @@ MlirLocation rustMlirLocationFromRustSpan(MlirContext context,
 
 MlirModule rustMlirModuleCreate(MlirLocation location) {
   return wrap(ModuleOp::create(unwrap(location)));
+}
+
+MlirModule rustMlirParseSourceFile(MlirContext context, MlirStringRef path) {
+  OwningOpRef<ModuleOp> module =
+      parseSourceFile<ModuleOp>(unwrap(path), unwrap(context));
+  if (!module)
+    return MlirModule{nullptr};
+  return wrap(module.release());
 }
 
 void rustMlirModuleDestroy(MlirModule module) { unwrap(module).erase(); }
@@ -320,6 +416,65 @@ bool rustMlirMergeTextModulesToFile(intptr_t numInputs,
     output << "\n";
   }
   return !output.has_error();
+}
+
+bool rustMlirLowerRustToLLVM(MlirOperation op, bool eraseSourceMIR) {
+  if (!op.ptr)
+    return false;
+
+  ensureRustToLLVMPassesRegistered();
+  rust_to_llvm::RustToLLVMLoweringOptions options;
+  options.eraseSourceMIR = eraseSourceMIR;
+  return succeeded(rust_to_llvm::lowerRustToLLVM(unwrap(op), options));
+}
+
+bool rustMlirRunPassPipeline(MlirOperation op, MlirStringRef pipeline) {
+  if (!op.ptr)
+    return false;
+
+  ensureRustToLLVMPassesRegistered();
+  PassManager pm(unwrap(op)->getContext());
+  if (failed(parsePassPipeline(unwrap(pipeline), pm)))
+    return false;
+  return succeeded(pm.run(unwrap(op)));
+}
+
+int rustMlirExecuteMain(MlirModule module, MlirStringRef entryPoint,
+                        intptr_t numSharedLibs,
+                        MlirStringRef const *sharedLibs) {
+  if (!module.ptr)
+    return 1;
+
+  ensureNativeTargetInitialized();
+
+  ModuleOp moduleOp = unwrap(module);
+  StringRef entryPointRef = unwrap(entryPoint);
+  std::optional<EntryPointResult> entryPointResult =
+      inferEntryPointResult(moduleOp, entryPointRef);
+  if (!entryPointResult)
+    return 1;
+
+  SmallVector<std::string> ownedSharedLibs;
+  SmallVector<StringRef> sharedLibRefs;
+  ownedSharedLibs.reserve(numSharedLibs);
+  sharedLibRefs.reserve(numSharedLibs);
+  for (intptr_t i = 0; i < numSharedLibs; ++i)
+    ownedSharedLibs.push_back(unwrap(sharedLibs[i]).str());
+  for (const std::string &library : ownedSharedLibs)
+    sharedLibRefs.push_back(library);
+
+  ExecutionEngineOptions engineOptions;
+  engineOptions.sharedLibPaths = sharedLibRefs;
+  llvm::Expected<std::unique_ptr<ExecutionEngine>> expectedEngine =
+      ExecutionEngine::create(moduleOp.getOperation(), engineOptions);
+  if (!expectedEngine) {
+    llvm::logAllUnhandledErrors(expectedEngine.takeError(), llvm::errs(),
+                                "Error: ");
+    return 1;
+  }
+
+  std::unique_ptr<ExecutionEngine> engine = std::move(*expectedEngine);
+  return invokeEntryPoint(*engine, entryPointRef, *entryPointResult);
 }
 
 void rustMirModuleSetTarget(MlirModule module, int64_t pointerWidth,

@@ -12,6 +12,7 @@ set(RUST_TO_LLVM_TEST_DEPENDS
   FileCheck
   not
   rust-cpu-runner
+  rust-run
   rust-opt
   rust-mir-extract
 )

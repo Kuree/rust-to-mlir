@@ -25,6 +25,8 @@ MLIR_CAPI_EXPORTED MlirLocation
 rustMlirLocationFromRustSpan(MlirContext context, MlirStringRef span);
 
 MLIR_CAPI_EXPORTED MlirModule rustMlirModuleCreate(MlirLocation location);
+MLIR_CAPI_EXPORTED MlirModule rustMlirParseSourceFile(MlirContext context,
+                                                       MlirStringRef path);
 MLIR_CAPI_EXPORTED void rustMlirModuleDestroy(MlirModule module);
 MLIR_CAPI_EXPORTED MlirOperation rustMlirModuleGetOperation(MlirModule module);
 MLIR_CAPI_EXPORTED MlirBlock rustMlirModuleGetBody(MlirModule module);
@@ -38,6 +40,15 @@ MLIR_CAPI_EXPORTED bool rustMlirWriteTextToFile(MlirOperation op,
 MLIR_CAPI_EXPORTED bool rustMlirMergeTextModulesToFile(
     intptr_t numInputs, MlirStringRef const *inputPaths, MlirStringRef path,
     bool emitBytecode);
+MLIR_CAPI_EXPORTED bool rustMlirLowerRustToLLVM(MlirOperation op,
+                                                bool eraseSourceMIR);
+MLIR_CAPI_EXPORTED bool rustMlirRunPassPipeline(MlirOperation op,
+                                                MlirStringRef pipeline);
+// Executes a lowered LLVM dialect entry point. A void entry returns status 0;
+// an i32 entry returns that value as the status. Results are not printed.
+MLIR_CAPI_EXPORTED int rustMlirExecuteMain(
+    MlirModule module, MlirStringRef entryPoint, intptr_t numSharedLibs,
+    MlirStringRef const *sharedLibs);
 
 MLIR_CAPI_EXPORTED void rustMirModuleSetTarget(MlirModule module,
                                                int64_t pointerWidth,

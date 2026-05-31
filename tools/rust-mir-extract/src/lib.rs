@@ -103,6 +103,9 @@ type RustMlirWriteBytecodeToFile = unsafe extern "C" fn(MlirOperation, MlirStrin
 type RustMlirWriteTextToFile = unsafe extern "C" fn(MlirOperation, MlirStringRef) -> bool;
 type RustMlirMergeTextModulesToFile =
     unsafe extern "C" fn(isize, *const MlirStringRef, MlirStringRef, bool) -> bool;
+type RustMlirLowerRustToLLVM = unsafe extern "C" fn(MlirOperation, bool) -> bool;
+type RustMlirExecuteMain =
+    unsafe extern "C" fn(MlirModule, MlirStringRef, isize, *const MlirStringRef) -> c_int;
 type RustMirModuleSetTarget = unsafe extern "C" fn(MlirModule, i64, MlirStringRef);
 type RustMirTypeFromRustcPublicString =
     unsafe extern "C" fn(MlirContext, MlirStringRef) -> MlirType;
@@ -286,6 +289,8 @@ struct MlirApi {
     write_bytecode_to_file: RustMlirWriteBytecodeToFile,
     write_text_to_file: RustMlirWriteTextToFile,
     merge_text_modules_to_file: RustMlirMergeTextModulesToFile,
+    lower_rust_to_llvm: RustMlirLowerRustToLLVM,
+    execute_main: RustMlirExecuteMain,
     module_set_target: RustMirModuleSetTarget,
     type_from_rustc_public_string: RustMirTypeFromRustcPublicString,
     mir_bool_type_get: RustMirBoolTypeGet,
@@ -374,6 +379,8 @@ impl MlirApi {
                 write_bytecode_to_file: load_symbol(handle, "rustMlirWriteBytecodeToFile")?,
                 write_text_to_file: load_symbol(handle, "rustMlirWriteTextToFile")?,
                 merge_text_modules_to_file: load_symbol(handle, "rustMlirMergeTextModulesToFile")?,
+                lower_rust_to_llvm: load_symbol(handle, "rustMlirLowerRustToLLVM")?,
+                execute_main: load_symbol(handle, "rustMlirExecuteMain")?,
                 module_set_target: load_symbol(handle, "rustMirModuleSetTarget")?,
                 type_from_rustc_public_string: load_symbol(
                     handle,
@@ -1630,6 +1637,34 @@ impl MlirEmitter {
         Ok(())
     }
 
+    fn lower_to_llvm(&self, erase_source_mir: bool) -> io::Result<()> {
+        let module_op = unsafe { (self.api.module_get_operation)(self.module) };
+        let ok = unsafe { (self.api.lower_rust_to_llvm)(module_op, erase_source_mir) };
+        if !ok {
+            return Err(io::Error::new(
+                io::ErrorKind::Other,
+                "failed to lower Rust MLIR to LLVM dialect",
+            ));
+        }
+        Ok(())
+    }
+
+    fn execute_main(&self, entry_point: &str, shared_libs: &[String]) -> io::Result<i32> {
+        let shared_lib_refs = shared_libs
+            .iter()
+            .map(|library| mlir_string(library))
+            .collect::<Vec<_>>();
+        let status = unsafe {
+            (self.api.execute_main)(
+                self.module,
+                mlir_string(entry_point),
+                shared_lib_refs.len() as isize,
+                shared_lib_refs.as_ptr(),
+            )
+        };
+        Ok(status)
+    }
+
     fn create_function(&self, function: &MirFunction) -> io::Result<MlirOperation> {
         let loc = self.location(&function.span);
         let op = unsafe {
@@ -2587,6 +2622,14 @@ fn rustc_args_for_crate_root(
     root: &str,
     passthrough: &[String],
 ) -> io::Result<(Vec<String>, RustcOutputDir)> {
+    rustc_args_for_crate_root_with_name(root, None, passthrough)
+}
+
+fn rustc_args_for_crate_root_with_name(
+    root: &str,
+    crate_name: Option<&str>,
+    passthrough: &[String],
+) -> io::Result<(Vec<String>, RustcOutputDir)> {
     let out_dir = RustcOutputDir::create()?;
     let mut args = vec![
         rustc_program(),
@@ -2596,6 +2639,10 @@ fn rustc_args_for_crate_root(
         "--out-dir".to_string(),
         out_dir.path().to_string_lossy().into_owned(),
     ];
+    if let Some(crate_name) = crate_name {
+        args.push("--crate-name".to_string());
+        args.push(crate_name.to_string());
+    }
     args.extend_from_slice(passthrough);
     Ok((args, out_dir))
 }
@@ -2628,6 +2675,72 @@ fn run_rustc_public(args: Vec<String>, output: &str, format: OutputFormat) -> io
             format!("rustc_public compiler run failed: {err:?}"),
         )),
     }
+}
+
+fn run_rustc_public_execute(
+    args: Vec<String>,
+    expected_main: Option<&str>,
+    entry_point: &str,
+    shared_libs: &[String],
+) -> io::Result<i32> {
+    let mut execute_error = None;
+    let mut exit_code = None;
+    let result = rustc_public::run!(&args, || {
+        let program = MirProgram::collect();
+        if let Some(expected_main) = expected_main {
+            if !program
+                .functions
+                .iter()
+                .any(|function| function.name == expected_main)
+            {
+                execute_error = Some(io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("main function not found; expected Rust item `{expected_main}`"),
+                ));
+                return std::ops::ControlFlow::Break(());
+            }
+        }
+        match MlirEmitter::new().and_then(|emitter| {
+            emitter.emit_program(&program)?;
+            emitter.lower_to_llvm(true)?;
+            emitter.execute_main(entry_point, shared_libs)
+        }) {
+            Ok(code) => {
+                exit_code = Some(code);
+                std::ops::ControlFlow::Continue(())
+            }
+            Err(err) => {
+                eprintln!("rust-mir-extract: failed to execute MLIR: {err}");
+                execute_error = Some(err);
+                std::ops::ControlFlow::Break(())
+            }
+        }
+    });
+
+    if let Some(err) = execute_error {
+        return Err(err);
+    }
+
+    match result {
+        Ok(()) => Ok(exit_code.unwrap_or(1)),
+        Err(err) => Err(io::Error::new(
+            io::ErrorKind::Other,
+            format!("rustc_public compiler run failed: {err:?}"),
+        )),
+    }
+}
+
+pub fn execute_crate_root_main(
+    root: &str,
+    crate_name: &str,
+    entry_point: &str,
+    shared_libs: &[String],
+    passthrough: &[String],
+) -> io::Result<i32> {
+    let (rustc_args, _out_dir) =
+        rustc_args_for_crate_root_with_name(root, Some(crate_name), passthrough)?;
+    let expected_main = format!("{crate_name}::main");
+    run_rustc_public_execute(rustc_args, Some(&expected_main), entry_point, shared_libs)
 }
 
 fn cargo_manifest_path(path: &str) -> PathBuf {
