@@ -1,0 +1,81 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  lit:
+    name: Lit tests
+    runs-on: ubuntu-24.04
+
+    env:
+      LLVM_VERSION: "20"
+      LLVM_ROOT: /usr/lib/llvm-20
+      RUSTUP_TOOLCHAIN: stable
+      CARGO_TERM_COLOR: always
+
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Install LLVM/MLIR dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ca-certificates gpg wget
+          sudo install -d -m 0755 /etc/apt/keyrings
+          wget -qO- https://apt.llvm.org/llvm-snapshot.gpg.key \
+            | sudo gpg --dearmor -o /etc/apt/keyrings/apt.llvm.org.gpg
+          echo "deb [signed-by=/etc/apt/keyrings/apt.llvm.org.gpg] http://apt.llvm.org/noble/ llvm-toolchain-noble-${LLVM_VERSION} main" \
+            | sudo tee /etc/apt/sources.list.d/llvm${LLVM_VERSION}.list
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential \
+            clang-${LLVM_VERSION} \
+            cmake \
+            lld-${LLVM_VERSION} \
+            libmlir-${LLVM_VERSION}-dev \
+            llvm-${LLVM_VERSION}-dev \
+            llvm-${LLVM_VERSION}-tools \
+            mlir-${LLVM_VERSION}-tools \
+            ninja-build \
+            python3 \
+            python3-venv
+
+      - name: Install lit
+        run: |
+          python3 -m venv .venv
+          .venv/bin/python -m pip install --upgrade pip
+          .venv/bin/python -m pip install lit
+          .venv/bin/lit --version
+
+      - name: Install Rust toolchain
+        run: |
+          rustup toolchain install "${RUSTUP_TOOLCHAIN}" \
+            --profile minimal \
+            --component llvm-tools-preview \
+            --component rust-src \
+            --component rustc-dev
+          rustup show active-toolchain
+          cargo --version
+          rustc --version
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -G Ninja \
+            -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_C_COMPILER=clang-${LLVM_VERSION} \
+            -DCMAKE_CXX_COMPILER=clang++-${LLVM_VERSION} \
+            -DMLIR_DIR=${LLVM_ROOT}/lib/cmake/mlir \
+            -DLLVM_DIR=${LLVM_ROOT}/lib/cmake/llvm \
+            -DLLVM_EXTERNAL_LIT=${GITHUB_WORKSPACE}/.venv/bin/lit
+
+      - name: Build
+        run: ninja -C build
+
+      - name: Run lit tests
+        run: .venv/bin/lit -v build/test
