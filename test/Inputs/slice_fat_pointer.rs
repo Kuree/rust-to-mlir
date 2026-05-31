@@ -58,3 +58,54 @@ pub fn run_slice_range_indexing() {
         __rtl_println_i32(to_closed[2] + to_closed_ok);
     }
 }
+
+pub fn run_array_range_indexing() {
+    let values = [3, 5, 7, 11, 13, 17];
+    let start = 2usize;
+    let end = 5usize;
+    let tail_start = 3usize;
+    let head_end = 4usize;
+    let inclusive_end = 3usize;
+    let to_inclusive_end = 2usize;
+
+    let middle = &values[start..end];
+    let tail = &values[tail_start..];
+    let head = &values[..head_end];
+    let closed = &values[start..=inclusive_end];
+    let to_closed = &values[..=to_inclusive_end];
+    let empty_middle = &values[2usize..2usize];
+    let empty_tail = &values[6usize..];
+
+    let middle_ok = if middle.len() == 3usize { 3 } else { 0 };
+    let tail_ok = if tail.len() == 3usize { 3 } else { 0 };
+    let head_ok = if head.len() == 4usize { 4 } else { 0 };
+    let closed_ok = if closed.len() == 2usize { 2 } else { 0 };
+    let to_closed_ok = if to_closed.len() == 3usize { 3 } else { 0 };
+    let empty_ok = if empty_middle.len() == 0usize { 10 } else { 0 }
+        + if empty_tail.len() == 0usize { 10 } else { 0 };
+
+    unsafe {
+        __rtl_println_i32(middle[0] + middle[2] + middle_ok);
+        __rtl_println_i32(tail[0] + tail[2] + tail_ok);
+        __rtl_println_i32(head[0] + head[3] + head_ok);
+        __rtl_println_i32(closed[0] + closed[1] + closed_ok);
+        __rtl_println_i32(to_closed[0] + to_closed[2] + to_closed_ok);
+        __rtl_println_i32(empty_ok);
+    }
+}
+
+pub fn run_mut_slice_range_indexing() {
+    let mut values = [1, 2, 3, 4, 5];
+    let start = 1usize;
+    let end = 4usize;
+    let middle = &mut values[start..end];
+
+    middle[0] = 12;
+    middle[2] = 24;
+
+    let middle_ok = if middle.len() == 3usize { 3 } else { 0 };
+
+    unsafe {
+        __rtl_println_i32(middle[0] + middle[2] + middle_ok);
+    }
+}
