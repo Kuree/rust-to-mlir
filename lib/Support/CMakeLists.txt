@@ -24,6 +24,8 @@ add_mlir_library(RustToLLVMSupport
   MLIRIR
   MLIRLLVMToLLVMIRTranslation
   MLIRLLVMDialect
+  MLIRMathDialect
+  MLIRMathToLLVM
   MLIRPass
   MLIRReconcileUnrealizedCasts
   MLIRSupport

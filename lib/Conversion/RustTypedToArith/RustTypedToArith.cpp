@@ -10,6 +10,7 @@
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/RustMIR/IR/RustMIRDialect.h"
 #include "mlir/Dialect/RustMIR/IR/RustTypes.h"
 #include "mlir/Dialect/RustTyped/IR/RustTypedOps.h"
@@ -20,6 +21,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/ADT/StringSwitch.h"
 #include "llvm/Support/Error.h"
 
 namespace mlir {
@@ -188,6 +190,15 @@ bool isLowerableIntegerCompareOp(OpT op, const TypeConverter &converter) {
 }
 
 template <typename OpT>
+bool isLowerableFloatCompareOp(OpT op, const TypeConverter &converter) {
+  Type lhsType = converter.convertType(op.getLhs().getType());
+  Type rhsType = converter.convertType(op.getRhs().getType());
+  Type resultType = converter.convertType(op.getResult().getType());
+  return isa_and_nonnull<FloatType>(lhsType) && lhsType == rhsType &&
+         resultType && resultType.isSignlessInteger(1);
+}
+
+template <typename OpT>
 bool isLowerableCheckedBinaryOp(OpT op, const TypeConverter &converter) {
   Type lhsType = converter.convertType(op.getLhs().getType());
   Type rhsType = converter.convertType(op.getRhs().getType());
@@ -237,6 +248,111 @@ bool isLowerableNumericCast(rustmir::NumericCastOp op,
   default:
     return false;
   }
+}
+
+enum class FloatMathMethod {
+  Unsupported,
+  Abs,
+  Acos,
+  Acosh,
+  Asin,
+  Asinh,
+  Atan,
+  Atan2,
+  Atanh,
+  Cbrt,
+  Ceil,
+  Copysign,
+  Cos,
+  Cosh,
+  Erf,
+  Exp,
+  Exp2,
+  ExpM1,
+  Floor,
+  Ln,
+  Ln1p,
+  Log10,
+  Log2,
+  MulAdd,
+  Powf,
+  Powi,
+  Round,
+  RoundTiesEven,
+  Sin,
+  Sinh,
+  Sqrt,
+  Tan,
+  Tanh,
+  Trunc,
+};
+
+std::optional<StringRef> getRustFloatMethodName(StringRef rustName) {
+  constexpr StringLiteral prefixes[] = {
+      "core::f32::<impl f32>::", "core::f64::<impl f64>::",
+      "std::f32::<impl f32>::", "std::f64::<impl f64>::"};
+  for (StringRef prefix : prefixes) {
+    StringRef method = rustName;
+    if (method.consume_front(prefix))
+      return method;
+  }
+  return std::nullopt;
+}
+
+FloatMathMethod classifyFloatMathMethod(StringRef method) {
+  return llvm::StringSwitch<FloatMathMethod>(method)
+      .Case("abs", FloatMathMethod::Abs)
+      .Case("acos", FloatMathMethod::Acos)
+      .Case("acosh", FloatMathMethod::Acosh)
+      .Case("asin", FloatMathMethod::Asin)
+      .Case("asinh", FloatMathMethod::Asinh)
+      .Case("atan", FloatMathMethod::Atan)
+      .Case("atan2", FloatMathMethod::Atan2)
+      .Case("atanh", FloatMathMethod::Atanh)
+      .Case("cbrt", FloatMathMethod::Cbrt)
+      .Case("ceil", FloatMathMethod::Ceil)
+      .Case("copysign", FloatMathMethod::Copysign)
+      .Case("cos", FloatMathMethod::Cos)
+      .Case("cosh", FloatMathMethod::Cosh)
+      .Case("erf", FloatMathMethod::Erf)
+      .Case("exp", FloatMathMethod::Exp)
+      .Case("exp2", FloatMathMethod::Exp2)
+      .Case("exp_m1", FloatMathMethod::ExpM1)
+      .Case("floor", FloatMathMethod::Floor)
+      .Case("ln", FloatMathMethod::Ln)
+      .Case("ln_1p", FloatMathMethod::Ln1p)
+      .Case("log10", FloatMathMethod::Log10)
+      .Case("log2", FloatMathMethod::Log2)
+      .Case("mul_add", FloatMathMethod::MulAdd)
+      .Case("powf", FloatMathMethod::Powf)
+      .Case("powi", FloatMathMethod::Powi)
+      .Case("round", FloatMathMethod::Round)
+      .Case("round_ties_even", FloatMathMethod::RoundTiesEven)
+      .Case("sin", FloatMathMethod::Sin)
+      .Case("sinh", FloatMathMethod::Sinh)
+      .Case("sqrt", FloatMathMethod::Sqrt)
+      .Case("tan", FloatMathMethod::Tan)
+      .Case("tanh", FloatMathMethod::Tanh)
+      .Case("trunc", FloatMathMethod::Trunc)
+      .Default(FloatMathMethod::Unsupported);
+}
+
+std::optional<FloatMathMethod> getFloatMathMethod(rustmir::TypedCallOp op) {
+  StringAttr rustName = op.getRustNameAttr();
+  if (!rustName)
+    rustName = op.getCalleeDefAttr();
+  if (!rustName)
+    return std::nullopt;
+
+  std::optional<StringRef> methodName =
+      getRustFloatMethodName(rustName.getValue());
+  if (!methodName)
+    return std::nullopt;
+
+  FloatMathMethod method = classifyFloatMathMethod(*methodName);
+  if (method == FloatMathMethod::Unsupported)
+    return std::nullopt;
+  return method;
 }
 
 bool isLowerableMakeAggregate(rustmir::MakeAggregateOp op,
@@ -668,6 +784,28 @@ struct CompareOpConversion : public OpConversionPattern<SourceOp> {
                                          : unsignedPredicate;
     Value replacement =
         mlir::rust::createOp<arith::CmpIOp>(rewriter, op.getLoc(), predicate,
+                                            adaptor.getLhs(), adaptor.getRhs())
+            .getResult();
+    rewriter.replaceOp(op, replacement);
+    return success();
+  }
+};
+
+template <typename SourceOp, arith::CmpFPredicate predicate>
+struct FloatCompareOpConversion : public OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType =
+        this->getTypeConverter()->convertType(op.getResult().getType());
+    if (!isa_and_nonnull<FloatType>(
+            this->getTypeConverter()->convertType(op.getLhs().getType())) ||
+        !resultType || !resultType.isSignlessInteger(1))
+      return failure();
+    Value replacement =
+        mlir::rust::createOp<arith::CmpFOp>(rewriter, op.getLoc(), predicate,
                                             adaptor.getLhs(), adaptor.getRhs())
             .getResult();
     rewriter.replaceOp(op, replacement);
@@ -1298,12 +1436,171 @@ struct TypedAssertConversion
   }
 };
 
+struct FloatMathCallConversion
+    : public OpConversionPattern<rustmir::TypedCallOp> {
+  using OpConversionPattern<rustmir::TypedCallOp>::OpConversionPattern;
+
+  template <typename MathOp>
+  LogicalResult rewriteUnary(rustmir::TypedCallOp op, ValueRange args,
+                             Type resultType,
+                             ConversionPatternRewriter &rewriter) const {
+    if (args.size() != 1 || args.front().getType() != resultType)
+      return rewriter.notifyMatchFailure(
+          op, "expected one float argument matching the result type");
+    Value replacement =
+        mlir::rust::createOp<MathOp>(rewriter, op.getLoc(), resultType,
+                                    args.front())
+            .getResult();
+    rewriter.replaceOp(op, replacement);
+    return success();
+  }
+
+  template <typename MathOp>
+  LogicalResult rewriteBinary(rustmir::TypedCallOp op, ValueRange args,
+                              Type resultType,
+                              ConversionPatternRewriter &rewriter) const {
+    if (args.size() != 2 || args[0].getType() != resultType ||
+        args[1].getType() != resultType)
+      return rewriter.notifyMatchFailure(
+          op, "expected two float arguments matching the result type");
+    Value replacement =
+        mlir::rust::createOp<MathOp>(rewriter, op.getLoc(), resultType, args[0],
+                                    args[1])
+            .getResult();
+    rewriter.replaceOp(op, replacement);
+    return success();
+  }
+
+  template <typename MathOp>
+  LogicalResult rewriteTernary(rustmir::TypedCallOp op, ValueRange args,
+                               Type resultType,
+                               ConversionPatternRewriter &rewriter) const {
+    if (args.size() != 3 || args[0].getType() != resultType ||
+        args[1].getType() != resultType || args[2].getType() != resultType)
+      return rewriter.notifyMatchFailure(
+          op, "expected three float arguments matching the result type");
+    Value replacement =
+        mlir::rust::createOp<MathOp>(rewriter, op.getLoc(), resultType, args[0],
+                                    args[1], args[2])
+            .getResult();
+    rewriter.replaceOp(op, replacement);
+    return success();
+  }
+
+  LogicalResult rewriteFPowI(rustmir::TypedCallOp op, ValueRange args,
+                             Type resultType,
+                             ConversionPatternRewriter &rewriter) const {
+    if (args.size() != 2 || args[0].getType() != resultType ||
+        !isa<IntegerType>(args[1].getType()))
+      return rewriter.notifyMatchFailure(
+          op, "expected float base and integer exponent arguments");
+    Value replacement =
+        mlir::rust::createOp<math::FPowIOp>(rewriter, op.getLoc(), resultType,
+                                           args[0], args[1])
+            .getResult();
+    rewriter.replaceOp(op, replacement);
+    return success();
+  }
+
+  LogicalResult
+  matchAndRewrite(rustmir::TypedCallOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    std::optional<FloatMathMethod> method = getFloatMathMethod(op);
+    if (!method)
+      return failure();
+
+    SmallVector<Type> resultTypes;
+    if (failed(
+            getTypeConverter()->convertTypes(op.getResultTypes(), resultTypes)))
+      return failure();
+    if (resultTypes.size() != 1 || !isa<FloatType>(resultTypes.front()))
+      return rewriter.notifyMatchFailure(op, "expected one float result");
+
+    Type resultType = resultTypes.front();
+    ValueRange args = adaptor.getArgs();
+    switch (*method) {
+    case FloatMathMethod::Abs:
+      return rewriteUnary<math::AbsFOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Acos:
+      return rewriteUnary<math::AcosOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Acosh:
+      return rewriteUnary<math::AcoshOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Asin:
+      return rewriteUnary<math::AsinOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Asinh:
+      return rewriteUnary<math::AsinhOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Atan:
+      return rewriteUnary<math::AtanOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Atan2:
+      return rewriteBinary<math::Atan2Op>(op, args, resultType, rewriter);
+    case FloatMathMethod::Atanh:
+      return rewriteUnary<math::AtanhOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Cbrt:
+      return rewriteUnary<math::CbrtOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Ceil:
+      return rewriteUnary<math::CeilOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Copysign:
+      return rewriteBinary<math::CopySignOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Cos:
+      return rewriteUnary<math::CosOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Cosh:
+      return rewriteUnary<math::CoshOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Erf:
+      return rewriteUnary<math::ErfOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Exp:
+      return rewriteUnary<math::ExpOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Exp2:
+      return rewriteUnary<math::Exp2Op>(op, args, resultType, rewriter);
+    case FloatMathMethod::ExpM1:
+      return rewriteUnary<math::ExpM1Op>(op, args, resultType, rewriter);
+    case FloatMathMethod::Floor:
+      return rewriteUnary<math::FloorOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Ln:
+      return rewriteUnary<math::LogOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Ln1p:
+      return rewriteUnary<math::Log1pOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Log10:
+      return rewriteUnary<math::Log10Op>(op, args, resultType, rewriter);
+    case FloatMathMethod::Log2:
+      return rewriteUnary<math::Log2Op>(op, args, resultType, rewriter);
+    case FloatMathMethod::MulAdd:
+      return rewriteTernary<math::FmaOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Powf:
+      return rewriteBinary<math::PowFOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Powi:
+      return rewriteFPowI(op, args, resultType, rewriter);
+    case FloatMathMethod::Round:
+      return rewriteUnary<math::RoundOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::RoundTiesEven:
+      return rewriteUnary<math::RoundEvenOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Sin:
+      return rewriteUnary<math::SinOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Sinh:
+      return rewriteUnary<math::SinhOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Sqrt:
+      return rewriteUnary<math::SqrtOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Tan:
+      return rewriteUnary<math::TanOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Tanh:
+      return rewriteUnary<math::TanhOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Trunc:
+      return rewriteUnary<math::TruncOp>(op, args, resultType, rewriter);
+    case FloatMathMethod::Unsupported:
+      break;
+    }
+    return failure();
+  }
+};
+
 struct TypedCallConversion : public OpConversionPattern<rustmir::TypedCallOp> {
   using OpConversionPattern<rustmir::TypedCallOp>::OpConversionPattern;
 
   LogicalResult
   matchAndRewrite(rustmir::TypedCallOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
+    if (getFloatMathMethod(op))
+      return failure();
+
     SmallVector<Type> resultTypes;
     if (failed(
             getTypeConverter()->convertTypes(op.getResultTypes(), resultTypes)))
@@ -1341,6 +1638,15 @@ void addIntegerCompareOpLegality(ConversionTarget &target,
 }
 
 template <typename OpT>
+void addIntegerOrFloatCompareOpLegality(ConversionTarget &target,
+                                        const TypeConverter *typeConverter) {
+  target.addDynamicallyLegalOp<OpT>([typeConverter](OpT op) {
+    return !isLowerableIntegerCompareOp(op, *typeConverter) &&
+           !isLowerableFloatCompareOp(op, *typeConverter);
+  });
+}
+
+template <typename OpT>
 void addIntegerOrFloatBinaryOpLegality(ConversionTarget &target,
                                        const TypeConverter *typeConverter) {
   target.addDynamicallyLegalOp<OpT>([typeConverter](OpT op) {
@@ -1372,7 +1678,7 @@ struct ConvertRustTypedToArithPass
   void getDependentDialects(DialectRegistry &registry) const final {
     registry
         .insert<arith::ArithDialect, LLVM::LLVMDialect, cf::ControlFlowDialect,
-                rustmir::RustMIRDialect, ub::UBDialect>();
+                math::MathDialect, rustmir::RustMIRDialect, ub::UBDialect>();
   }
 
   void runOnOperation() final {
@@ -1382,8 +1688,8 @@ struct ConvertRustTypedToArithPass
 
     ConversionTarget target(*context);
     target.addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect,
-                           cf::ControlFlowDialect, rustmir::RustMIRDialect,
-                           ub::UBDialect>();
+                           cf::ControlFlowDialect, math::MathDialect,
+                           rustmir::RustMIRDialect, ub::UBDialect>();
     const TypeConverter *typeConverterPtr = &typeConverter;
     target.addDynamicallyLegalOp<rustmir::TypedConstOp>(
         [&](rustmir::TypedConstOp op) {
@@ -1414,12 +1720,18 @@ struct ConvertRustTypedToArithPass
     addIntegerBinaryOpLegality<rustmir::ShrOp>(target, typeConverterPtr);
     addIntegerBinaryOpLegality<rustmir::ShrUncheckedOp>(target,
                                                         typeConverterPtr);
-    addIntegerCompareOpLegality<rustmir::EqOp>(target, typeConverterPtr);
-    addIntegerCompareOpLegality<rustmir::NeOp>(target, typeConverterPtr);
-    addIntegerCompareOpLegality<rustmir::LtOp>(target, typeConverterPtr);
-    addIntegerCompareOpLegality<rustmir::LeOp>(target, typeConverterPtr);
-    addIntegerCompareOpLegality<rustmir::GtOp>(target, typeConverterPtr);
-    addIntegerCompareOpLegality<rustmir::GeOp>(target, typeConverterPtr);
+    addIntegerOrFloatCompareOpLegality<rustmir::EqOp>(target,
+                                                      typeConverterPtr);
+    addIntegerOrFloatCompareOpLegality<rustmir::NeOp>(target,
+                                                      typeConverterPtr);
+    addIntegerOrFloatCompareOpLegality<rustmir::LtOp>(target,
+                                                      typeConverterPtr);
+    addIntegerOrFloatCompareOpLegality<rustmir::LeOp>(target,
+                                                      typeConverterPtr);
+    addIntegerOrFloatCompareOpLegality<rustmir::GtOp>(target,
+                                                      typeConverterPtr);
+    addIntegerOrFloatCompareOpLegality<rustmir::GeOp>(target,
+                                                      typeConverterPtr);
     target.addDynamicallyLegalOp<rustmir::CheckedAddOp>(
         [&](rustmir::CheckedAddOp op) {
           return !isLowerableCheckedBinaryOp(op, typeConverter);
@@ -1575,6 +1887,12 @@ struct ConvertRustTypedToArithPass
                             arith::CmpIPredicate::ugt>,
         CompareOpConversion<rustmir::GeOp, arith::CmpIPredicate::sge,
                             arith::CmpIPredicate::uge>,
+        FloatCompareOpConversion<rustmir::EqOp, arith::CmpFPredicate::OEQ>,
+        FloatCompareOpConversion<rustmir::NeOp, arith::CmpFPredicate::UNE>,
+        FloatCompareOpConversion<rustmir::LtOp, arith::CmpFPredicate::OLT>,
+        FloatCompareOpConversion<rustmir::LeOp, arith::CmpFPredicate::OLE>,
+        FloatCompareOpConversion<rustmir::GtOp, arith::CmpFPredicate::OGT>,
+        FloatCompareOpConversion<rustmir::GeOp, arith::CmpFPredicate::OGE>,
         CheckedAddOpConversion, CheckedSubOpConversion, CheckedMulOpConversion,
         NegOpConversion, FloatNegOpConversion, NotOpConversion,
         IntCastOpConversion, NumericCastOpConversion,
@@ -1583,8 +1901,8 @@ struct ConvertRustTypedToArithPass
         MakeAggregateConversion, FieldConversion, FieldAddrConversion,
         IndexAddrConversion, SliceFromArrayConversion, PtrMetadataConversion,
         SubsliceConversion, SliceRangeConversion, TypedReturnConversion,
-        TypedSwitchIntConversion, TypedAssertConversion, TypedCallConversion>(
-        typeConverter, context);
+        TypedSwitchIntConversion, TypedAssertConversion,
+        FloatMathCallConversion, TypedCallConversion>(typeConverter, context);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
   }

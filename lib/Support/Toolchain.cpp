@@ -6,6 +6,7 @@
 
 #include "RustToLLVM/Support/Toolchain.h"
 
+#include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/Passes.h"
 #include "mlir/Conversion/RustTypedMemoryToLLVM/RustTypedMemoryToLLVM.h"
 #include "mlir/Conversion/RustTypedToArith/RustTypedToArith.h"
@@ -17,6 +18,7 @@
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Index/IR/IndexDialect.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
+#include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/RustMIR/IR/RustMIRDialect.h"
 #include "mlir/Dialect/RustMIR/Transforms/Passes.h"
 #include "mlir/Dialect/UB/IR/UBOps.h"
@@ -31,7 +33,8 @@ using namespace mlir;
 void rust_to_llvm::registerRustToLLVMDialects(DialectRegistry &registry) {
   registry.insert<arith::ArithDialect, cf::ControlFlowDialect, DLTIDialect,
                   func::FuncDialect, index::IndexDialect, LLVM::LLVMDialect,
-                  rust::mir::RustMIRDialect, ub::UBDialect>();
+                  math::MathDialect, rust::mir::RustMIRDialect,
+                  ub::UBDialect>();
 }
 
 void rust_to_llvm::registerRustToLLVMPasses() {
@@ -39,6 +42,7 @@ void rust_to_llvm::registerRustToLLVMPasses() {
   registerConvertControlFlowToLLVMPass();
   registerConvertFuncToLLVMPass();
   registerConvertIndexToLLVMPass();
+  registerConvertMathToLLVMPass();
   registerReconcileUnrealizedCasts();
   registerUBToLLVMConversionPass();
   registerConvertRustTypedToArithPass();
@@ -67,6 +71,7 @@ void rust_to_llvm::populateRustToLLVMLoweringPipeline(
   pm.addPass(createConvertRustTypedToControlFlowPass());
   pm.addPass(createMem2Reg());
   pm.addPass(createConvertRustTypedMemoryToLLVMPass());
+  pm.addPass(createConvertMathToLLVMPass());
   pm.addPass(createArithToLLVMConversionPass());
   pm.addPass(createConvertControlFlowToLLVMPass());
   pm.addPass(createConvertFuncToLLVMPass());

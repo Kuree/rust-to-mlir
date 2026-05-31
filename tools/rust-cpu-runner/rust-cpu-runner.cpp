@@ -39,7 +39,7 @@
 namespace cl = llvm::cl;
 
 namespace {
-enum class EntryPointResult { Void, I32, I64, F32 };
+enum class EntryPointResult { Void, I32, I64, F32, F64 };
 
 cl::opt<std::string> inputFilename(cl::Positional, cl::desc("<input file>"),
                                    cl::Required);
@@ -339,6 +339,8 @@ std::optional<EntryPointResult> inferEntryPointResult(mlir::ModuleOp module) {
     return EntryPointResult::I64;
   if (resultType.isF32())
     return EntryPointResult::F32;
+  if (resultType.isF64())
+    return EntryPointResult::F64;
 
   llvm::errs() << "error: unsupported entry point result type ";
   resultType.print(llvm::errs());
@@ -374,6 +376,8 @@ int invokeEntryPoint(mlir::ExecutionEngine &engine,
     return invokeAndPrintResult<std::int64_t>(engine, entryPoint);
   case EntryPointResult::F32:
     return invokeAndPrintResult<float>(engine, entryPoint);
+  case EntryPointResult::F64:
+    return invokeAndPrintResult<double>(engine, entryPoint);
   }
   llvm_unreachable("unknown entry point result kind");
 }

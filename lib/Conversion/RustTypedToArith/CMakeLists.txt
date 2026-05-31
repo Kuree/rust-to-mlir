@@ -11,6 +11,7 @@ add_mlir_conversion_library(RustToLLVMRustTypedToArith
   MLIRDataLayoutInterfaces
   MLIRIR
   MLIRLLVMDialect
+  MLIRMathDialect
   MLIRPass
   MLIRSupport
   MLIRTransformUtils
