@@ -220,6 +220,25 @@ bool isLowerableIntCast(rustmir::IntCastOp op,
          isa_and_nonnull<IntegerType>(resultType);
 }
 
+bool isLowerableNumericCast(rustmir::NumericCastOp op,
+                            const TypeConverter &converter) {
+  Type inputType = converter.convertType(op.getInput().getType());
+  Type resultType = converter.convertType(op.getResult().getType());
+  switch (op.getCastKind()) {
+  case rustmir::RustCastKind::FloatToInt:
+    return isa_and_nonnull<FloatType>(inputType) &&
+           isa_and_nonnull<IntegerType>(resultType);
+  case rustmir::RustCastKind::FloatToFloat:
+    return isa_and_nonnull<FloatType>(inputType) &&
+           isa_and_nonnull<FloatType>(resultType);
+  case rustmir::RustCastKind::IntToFloat:
+    return isa_and_nonnull<IntegerType>(inputType) &&
+           isa_and_nonnull<FloatType>(resultType);
+  default:
+    return false;
+  }
+}
+
 bool isLowerableMakeAggregate(rustmir::MakeAggregateOp op,
                               const TypeConverter &converter) {
   Type converted = converter.convertType(op.getResult().getType());
@@ -364,6 +383,119 @@ void createNoOverflowAssert(OpBuilder &builder, Location loc, Value overflow,
       mlir::rust::createOp<arith::XOrIOp>(builder, loc, overflow, trueValue)
           .getResult();
   mlir::rust::createOp<cf::AssertOp>(builder, loc, noOverflow, message);
+}
+
+Value createFloatPredicate(OpBuilder &builder, Location loc,
+                           arith::CmpFPredicate predicate, Value lhs,
+                           Value rhs) {
+  return mlir::rust::createOp<arith::CmpFOp>(builder, loc, predicate, lhs, rhs)
+      .getResult();
+}
+
+Value createSelect(OpBuilder &builder, Location loc, Value condition,
+                   Value trueValue, Value falseValue) {
+  return mlir::rust::createOp<arith::SelectOp>(
+             builder, loc, condition, trueValue, falseValue)
+      .getResult();
+}
+
+Value createFloatConstant(OpBuilder &builder, Location loc, FloatType type,
+                          const llvm::APFloat &value) {
+  auto attr = cast<TypedAttr>(FloatAttr::get(type, value));
+  return mlir::rust::createOp<arith::ConstantOp>(builder, loc, type, attr)
+      .getResult();
+}
+
+Value createIntegerToFloatConstant(OpBuilder &builder, Location loc,
+                                   FloatType resultType,
+                                   const llvm::APInt &value, bool isSigned) {
+  llvm::APFloat floatValue =
+      llvm::APFloat::getZero(resultType.getFloatSemantics());
+  floatValue.convertFromAPInt(value, isSigned,
+                              llvm::APFloat::rmNearestTiesToEven);
+  return createFloatConstant(builder, loc, resultType, floatValue);
+}
+
+Value createFloatZero(OpBuilder &builder, Location loc, FloatType resultType) {
+  return createFloatConstant(
+      builder, loc, resultType,
+      llvm::APFloat::getZero(resultType.getFloatSemantics()));
+}
+
+Value createUnsignedPowerOfTwoFloat(OpBuilder &builder, Location loc,
+                                    FloatType resultType, unsigned exponent) {
+  llvm::APInt value(exponent + 1, 1);
+  value <<= exponent;
+  return createIntegerToFloatConstant(builder, loc, resultType, value,
+                                      /*isSigned=*/false);
+}
+
+Value createSignedMinFloat(OpBuilder &builder, Location loc,
+                           FloatType resultType, unsigned intWidth) {
+  return createIntegerToFloatConstant(
+      builder, loc, resultType, llvm::APInt::getSignedMinValue(intWidth),
+      /*isSigned=*/true);
+}
+
+Value createSaturatingFloatToIntCast(OpBuilder &builder, Location loc,
+                                     Value input, FloatType inputType,
+                                     IntegerType resultType,
+                                     Type rustResultType) {
+  unsigned resultWidth = resultType.getWidth();
+  bool isSigned = isSignedRustInteger(rustResultType);
+
+  Value isNan = createFloatPredicate(builder, loc, arith::CmpFPredicate::UNO,
+                                     input, input);
+  Value zeroFloat = createFloatZero(builder, loc, inputType);
+  Value zeroInt =
+      createIntegerConstant(builder, loc, resultType,
+                            llvm::APInt::getZero(resultWidth));
+
+  Value tooLow;
+  Value tooHigh;
+  Value lowResult = zeroInt;
+  Value highResult;
+
+  if (isSigned) {
+    Value minThreshold =
+        createSignedMinFloat(builder, loc, inputType, resultWidth);
+    Value maxThreshold = createUnsignedPowerOfTwoFloat(
+        builder, loc, inputType, resultWidth - 1);
+    tooLow = createFloatPredicate(builder, loc, arith::CmpFPredicate::OLE,
+                                  input, minThreshold);
+    tooHigh = createFloatPredicate(builder, loc, arith::CmpFPredicate::OGE,
+                                   input, maxThreshold);
+    lowResult =
+        createIntegerConstant(builder, loc, resultType,
+                              llvm::APInt::getSignedMinValue(resultWidth));
+    highResult =
+        createIntegerConstant(builder, loc, resultType,
+                              llvm::APInt::getSignedMaxValue(resultWidth));
+  } else {
+    Value maxThreshold = createUnsignedPowerOfTwoFloat(
+        builder, loc, inputType, resultWidth);
+    tooLow = createFloatPredicate(builder, loc, arith::CmpFPredicate::OLE,
+                                  input, zeroFloat);
+    tooHigh = createFloatPredicate(builder, loc, arith::CmpFPredicate::OGE,
+                                   input, maxThreshold);
+    highResult = createIntegerConstant(builder, loc, resultType,
+                                       llvm::APInt::getMaxValue(resultWidth));
+  }
+
+  Value safeInput = createSelect(builder, loc, isNan, zeroFloat, input);
+  safeInput = createSelect(builder, loc, tooLow, zeroFloat, safeInput);
+  safeInput = createSelect(builder, loc, tooHigh, zeroFloat, safeInput);
+
+  Value castValue =
+      isSigned ? mlir::rust::createOp<arith::FPToSIOp>(
+                     builder, loc, resultType, safeInput)
+                     .getResult()
+               : mlir::rust::createOp<arith::FPToUIOp>(
+                     builder, loc, resultType, safeInput)
+                     .getResult();
+  Value result = createSelect(builder, loc, tooLow, lowResult, castValue);
+  result = createSelect(builder, loc, tooHigh, highResult, result);
+  return createSelect(builder, loc, isNan, zeroInt, result);
 }
 
 struct TypedConstOpConversion
@@ -811,6 +943,74 @@ struct IntCastOpConversion : public OpConversionPattern<rustmir::IntCastOp> {
   }
 };
 
+struct NumericCastOpConversion
+    : public OpConversionPattern<rustmir::NumericCastOp> {
+  using OpConversionPattern<rustmir::NumericCastOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::NumericCastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type inputType = getTypeConverter()->convertType(op.getInput().getType());
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!inputType || !resultType)
+      return failure();
+
+    switch (op.getCastKind()) {
+    case rustmir::RustCastKind::FloatToInt: {
+      auto sourceFloat = dyn_cast<FloatType>(inputType);
+      auto resultInteger = dyn_cast<IntegerType>(resultType);
+      if (!sourceFloat || !resultInteger)
+        return failure();
+      Value replacement = createSaturatingFloatToIntCast(
+          rewriter, op.getLoc(), adaptor.getInput(), sourceFloat,
+          resultInteger, op.getResult().getType());
+      rewriter.replaceOp(op, replacement);
+      return success();
+    }
+    case rustmir::RustCastKind::FloatToFloat: {
+      auto sourceFloat = dyn_cast<FloatType>(inputType);
+      auto resultFloat = dyn_cast<FloatType>(resultType);
+      if (!sourceFloat || !resultFloat)
+        return failure();
+
+      unsigned sourceWidth = sourceFloat.getWidth();
+      unsigned resultWidth = resultFloat.getWidth();
+      if (sourceWidth == resultWidth) {
+        rewriter.replaceOp(op, adaptor.getInput());
+        return success();
+      }
+
+      Value replacement =
+          sourceWidth < resultWidth
+              ? mlir::rust::createOp<arith::ExtFOp>(
+                    rewriter, op.getLoc(), resultType, adaptor.getInput())
+                    .getResult()
+              : mlir::rust::createOp<arith::TruncFOp>(
+                    rewriter, op.getLoc(), resultType, adaptor.getInput())
+                    .getResult();
+      rewriter.replaceOp(op, replacement);
+      return success();
+    }
+    case rustmir::RustCastKind::IntToFloat: {
+      if (!isa<IntegerType>(inputType) || !isa<FloatType>(resultType))
+        return failure();
+      Value replacement =
+          isSignedRustInteger(op.getInput().getType())
+              ? mlir::rust::createOp<arith::SIToFPOp>(
+                    rewriter, op.getLoc(), resultType, adaptor.getInput())
+                    .getResult()
+              : mlir::rust::createOp<arith::UIToFPOp>(
+                    rewriter, op.getLoc(), resultType, adaptor.getInput())
+                    .getResult();
+      rewriter.replaceOp(op, replacement);
+      return success();
+    }
+    default:
+      return failure();
+    }
+  }
+};
+
 struct LocalSlotConversion : public OpConversionPattern<rustmir::LocalSlotOp> {
   using OpConversionPattern<rustmir::LocalSlotOp>::OpConversionPattern;
 
@@ -1239,6 +1439,10 @@ struct ConvertRustTypedToArithPass
         [&](rustmir::IntCastOp op) {
           return !isLowerableIntCast(op, typeConverter);
         });
+    target.addDynamicallyLegalOp<rustmir::NumericCastOp>(
+        [&](rustmir::NumericCastOp op) {
+          return !isLowerableNumericCast(op, typeConverter);
+        });
     target.addDynamicallyLegalOp<rustmir::LocalSlotOp>(
         [&](rustmir::LocalSlotOp op) {
           return !needsTypeConversion(op.getSlot().getType(), typeConverter);
@@ -1373,7 +1577,7 @@ struct ConvertRustTypedToArithPass
                             arith::CmpIPredicate::uge>,
         CheckedAddOpConversion, CheckedSubOpConversion, CheckedMulOpConversion,
         NegOpConversion, FloatNegOpConversion, NotOpConversion,
-        IntCastOpConversion,
+        IntCastOpConversion, NumericCastOpConversion,
         LocalSlotConversion, LoadConversion,
         StoreConversion, BorrowOpConversion, RawAddressOpConversion,
         MakeAggregateConversion, FieldConversion, FieldAddrConversion,

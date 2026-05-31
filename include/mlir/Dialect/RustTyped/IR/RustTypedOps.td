@@ -154,6 +154,16 @@ def RustTyped_IntCastOp : RustTyped_Op<"int_cast"> {
   let hasVerifier = 1;
 }
 
+def RustTyped_NumericCastOp : RustTyped_Op<"numeric_cast"> {
+  let summary = "Typed Rust MIR numeric cast";
+  let arguments = (ins RustCastKindAttr:$cast_kind,
+                       AnyType:$input,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input attr-dict `:` type($input) `->` type($result)";
+  let hasVerifier = 1;
+}
+
 def RustTyped_MakeAggregateOp : RustTyped_Op<"aggregate"> {
   let summary = "Build a typed Rust aggregate";
   let arguments = (ins Variadic<AnyType>:$values,

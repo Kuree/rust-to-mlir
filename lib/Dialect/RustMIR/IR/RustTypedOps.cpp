@@ -134,6 +134,8 @@ bool isIntegerLike(Type type) {
 
 bool isRustIntegerCastType(Type type) { return isa<IntType, BoolType>(type); }
 
+bool isRustFloatCastType(Type type) { return isa<rust::mir::FloatType>(type); }
+
 Type getPointerPointeeType(Type type) {
   if (auto refType = dyn_cast<TypedRefType>(type))
     return refType.getPointeeType();
@@ -207,6 +209,29 @@ LogicalResult IntCastOp::verify() {
   if (!isRustIntegerCastType(getResult().getType()))
     return emitOpError("result must be a Rust integer or bool type");
   return success();
+}
+
+LogicalResult NumericCastOp::verify() {
+  Type inputType = getInput().getType();
+  Type resultType = getResult().getType();
+  switch (getCastKind()) {
+  case RustCastKind::FloatToInt:
+    if (!isRustFloatCastType(inputType) || !isRustIntegerCastType(resultType))
+      return emitOpError("FloatToInt requires a Rust float input and Rust "
+                         "integer or bool result");
+    return success();
+  case RustCastKind::FloatToFloat:
+    if (!isRustFloatCastType(inputType) || !isRustFloatCastType(resultType))
+      return emitOpError("FloatToFloat requires Rust float input and result");
+    return success();
+  case RustCastKind::IntToFloat:
+    if (!isRustIntegerCastType(inputType) || !isRustFloatCastType(resultType))
+      return emitOpError("IntToFloat requires a Rust integer or bool input "
+                         "and Rust float result");
+    return success();
+  default:
+    return emitOpError("unsupported numeric cast kind");
+  }
 }
 
 LogicalResult FieldAddrOp::verify() {

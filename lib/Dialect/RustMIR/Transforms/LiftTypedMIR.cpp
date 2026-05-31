@@ -264,6 +264,8 @@ bool isRustIntegerCastType(Type type) {
   return isa<rust::mir::IntType, rust::mir::BoolType>(type);
 }
 
+bool isRustFloatCastType(Type type) { return isa<rust::mir::FloatType>(type); }
+
 Type getDynamicallyIndexedElementType(Type aggregateType) {
   if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(aggregateType))
     return arrayType.getElementType();
@@ -1074,6 +1076,31 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
       Value result = mlir::rust::createOp<rust::mir::IntCastOp>(
                          builder, assign.getLoc(), dest->elementType,
                          *operand, assign.getSpanAttr())
+                         .getResult();
+      createStore(builder, assign.getLoc(), result, dest->slot);
+      return success();
+    }
+
+    if (cast.getCastKind() == rust::mir::RustCastKind::FloatToInt ||
+        cast.getCastKind() == rust::mir::RustCastKind::FloatToFloat ||
+        cast.getCastKind() == rust::mir::RustCastKind::IntToFloat) {
+      bool validNumericCast =
+          (cast.getCastKind() == rust::mir::RustCastKind::FloatToInt &&
+           isRustFloatCastType((*operand).getType()) &&
+           isRustIntegerCastType(dest->elementType)) ||
+          (cast.getCastKind() == rust::mir::RustCastKind::FloatToFloat &&
+           isRustFloatCastType((*operand).getType()) &&
+           isRustFloatCastType(dest->elementType)) ||
+          (cast.getCastKind() == rust::mir::RustCastKind::IntToFloat &&
+           isRustIntegerCastType((*operand).getType()) &&
+           isRustFloatCastType(dest->elementType));
+      if (!validNumericCast)
+        return assign.emitError("unsupported numeric cast types");
+
+      Value result = mlir::rust::createOp<rust::mir::NumericCastOp>(
+                         builder, assign.getLoc(), dest->elementType,
+                         cast.getCastKindAttr(), *operand,
+                         assign.getSpanAttr())
                          .getResult();
       createStore(builder, assign.getLoc(), result, dest->slot);
       return success();

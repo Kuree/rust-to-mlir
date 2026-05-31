@@ -1,7 +1,3 @@
-set(LLVM_LINK_COMPONENTS
-  Support
-)
-
 add_mlir_tool(rust-cpu-runner
   rust-cpu-runner.cpp
 )
@@ -17,7 +13,6 @@ target_link_libraries(rust-cpu-runner
   MLIRParser
   MLIRPass
   MLIRSupport
-  LLVMSupport
 )
 
 mlir_check_link_libraries(rust-cpu-runner)
