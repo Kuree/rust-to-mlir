@@ -72,6 +72,19 @@ endif()
 message(STATUS "Using Cargo executable: ${RUST_TO_MLIR_CARGO_EXECUTABLE}")
 message(STATUS "Using rustc executable: ${RUST_TO_MLIR_RUSTC_EXECUTABLE}")
 
+set(RUST_TO_MLIR_DEFAULT_PYTHON_EXECUTABLE
+  "${PROJECT_SOURCE_DIR}/env/bin/python")
+if(EXISTS "${RUST_TO_MLIR_DEFAULT_PYTHON_EXECUTABLE}")
+  set(RUST_TO_MLIR_PYTHON_EXECUTABLE
+    "${RUST_TO_MLIR_DEFAULT_PYTHON_EXECUTABLE}"
+    CACHE FILEPATH "Python executable used to build RustToMLIR wheels")
+else()
+  find_package(Python3 REQUIRED COMPONENTS Interpreter)
+  set(RUST_TO_MLIR_PYTHON_EXECUTABLE "${Python3_EXECUTABLE}"
+    CACHE FILEPATH "Python executable used to build RustToMLIR wheels")
+endif()
+message(STATUS "Using Python executable for wheel builds: ${RUST_TO_MLIR_PYTHON_EXECUTABLE}")
+
 execute_process(
   COMMAND ${RUST_TO_MLIR_RUSTC_EXECUTABLE} --print target-libdir
   OUTPUT_VARIABLE RUST_TO_MLIR_RUST_TARGET_LIBDIR
@@ -101,3 +114,38 @@ option(RUST_TO_MLIR_INCLUDE_TESTS "Generate RustToMLIR lit test targets" ON)
 if(RUST_TO_MLIR_INCLUDE_TESTS)
   add_subdirectory(test)
 endif()
+
+set(RUST_TO_MLIR_WHEEL_DIST_DIR "${PROJECT_SOURCE_DIR}/dist"
+  CACHE PATH "Directory for auditwheel-repaired RustToMLIR wheels")
+set(RUST_TO_MLIR_AUDITWHEEL_PLAT ""
+  CACHE STRING "Optional auditwheel --plat value for RustToMLIR wheels")
+
+set(RUST_TO_MLIR_WHEEL_ARGS
+  --build-dir "${PROJECT_BINARY_DIR}"
+  --raw-dir "${PROJECT_BINARY_DIR}/python-wheel"
+  --dist-dir "${RUST_TO_MLIR_WHEEL_DIST_DIR}"
+)
+if(RUST_TO_MLIR_AUDITWHEEL_PLAT)
+  list(APPEND RUST_TO_MLIR_WHEEL_ARGS
+    --plat "${RUST_TO_MLIR_AUDITWHEEL_PLAT}")
+endif()
+if(CMAKE_CONFIGURATION_TYPES)
+  list(APPEND RUST_TO_MLIR_WHEEL_ARGS --config "$<CONFIG>")
+endif()
+
+add_custom_target(wheel
+  COMMAND ${CMAKE_COMMAND} -E env
+          RUST_TO_MLIR_CMAKE_BINARY_DIR=${PROJECT_BINARY_DIR}
+          ${RUST_TO_MLIR_PYTHON_EXECUTABLE}
+          ${PROJECT_SOURCE_DIR}/python/build_wheel.py
+          ${RUST_TO_MLIR_WHEEL_ARGS}
+  WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}/python
+  DEPENDS
+    RustToMLIRRustCAPI
+    rust-cpu-runner
+    rust-mir-extract
+    rust-opt
+    rust-run
+    rust-to-mlir-runtime
+  COMMENT "Building auditwheel-repaired RustToMLIR wheel in ${RUST_TO_MLIR_WHEEL_DIST_DIR}"
+  VERBATIM)

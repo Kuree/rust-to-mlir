@@ -34,6 +34,16 @@ ninja -C build check-rust-to-mlir
 The configured Cargo and rustc paths are also available in lit tests as
 `%cargo` and `%rustc`.
 
+Build a repaired Python wheel containing the native tools and shared libraries:
+
+```sh
+env/bin/python -m pip install hatchling auditwheel patchelf
+ninja -C build wheel
+```
+
+The wheel target uses `python/pyproject.toml` and writes the auditwheel-repaired
+wheel to `dist/`.
+
 ## Extract Rust MIR
 
 ```sh

@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "rust-to-mlir"
+dynamic = ["version"]
+description = "Rust MIR extraction and MLIR lowering tools"
+requires-python = ">=3.9"
+license = { text = "Apache-2.0 WITH LLVM-exception" }
+authors = [
+  { name = "RustToMLIR contributors" },
+]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Environment :: Console",
+  "License :: OSI Approved :: Apache Software License",
+  "Operating System :: POSIX :: Linux",
+  "Programming Language :: Python :: 3",
+  "Topic :: Software Development :: Compilers",
+]
+
+[project.scripts]
+rust-cpu-runner = "rust_to_mlir._cli:rust_cpu_runner"
+rust-mir-extract = "rust_to_mlir._cli:rust_mir_extract"
+rust-opt = "rust_to_mlir._cli:rust_opt"
+rust-run = "rust_to_mlir._cli:rust_run"
+
+[tool.hatch.build.targets.sdist]
+only-include = [
+  "build_wheel.py",
+  "hatch_build.py",
+  "pyproject.toml",
+  "src",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rust_to_mlir"]
+
+[tool.hatch.version]
+source = "regex"
+path = "src/rust_to_mlir/VERSION"
+pattern = "^(?P<version>.+)$"
+
+[tool.hatch.build.hooks.custom]
+path = "hatch_build.py"
