@@ -17,8 +17,10 @@
 #include "mlir/IR/DialectRegistry.h"
 #include "mlir/IR/Operation.h"
 #include "mlir/IR/SymbolTable.h"
+#include "mlir/Interfaces/MemorySlotInterfaces.h"
 #include "mlir/Pass/Pass.h"
 #include "llvm/ADT/Hashing.h"
+#include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
@@ -222,11 +224,40 @@ LocalSlot *lookupSlot(llvm::StringMap<LocalSlot> &slots, StringRef name) {
 }
 
 Type getIndexedElementType(Type aggregateType, Attribute index) {
-  if (auto tupleType = dyn_cast<rust::mir::TypedTupleType>(aggregateType))
-    return tupleType.getTypeAtIndex(index);
-  if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(aggregateType))
-    return arrayType.getTypeAtIndex(index);
+  if (auto destructurable =
+          dyn_cast<DestructurableTypeInterface>(aggregateType))
+    return destructurable.getTypeAtIndex(index);
   return {};
+}
+
+std::optional<uint64_t> getAggregateElementCount(Type aggregateType) {
+  if (auto tupleType = dyn_cast<rust::mir::TypedTupleType>(aggregateType))
+    return tupleType.getElementTypes().size();
+  if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(aggregateType))
+    return arrayType.getLength();
+
+  auto destructurable = dyn_cast<DestructurableTypeInterface>(aggregateType);
+  if (!destructurable)
+    return std::nullopt;
+  std::optional<llvm::DenseMap<Attribute, Type>> elements =
+      destructurable.getSubelementIndexMap();
+  if (!elements)
+    return std::nullopt;
+  return elements->size();
+}
+
+Type getAggregateElementType(Type aggregateType, uint64_t index,
+                             OpBuilder &builder) {
+  if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(aggregateType))
+    return arrayType.getElementType();
+  return getIndexedElementType(
+      aggregateType, builder.getI64IntegerAttr(static_cast<int64_t>(index)));
+}
+
+bool isSingleVariantAdt(Type type) {
+  auto adtType = dyn_cast<rust::mir::AdtType>(type);
+  return adtType && adtType.getVariants().size() == 1 &&
+         isa<rust::mir::TypedTupleType>(adtType.getVariants().front());
 }
 
 Type getDynamicallyIndexedElementType(Type aggregateType) {
@@ -1062,30 +1093,31 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
 
     auto tupleType = dyn_cast<rust::mir::TypedTupleType>(dest->elementType);
     auto arrayType = dyn_cast<rust::mir::TypedArrayType>(dest->elementType);
-    if ((aggregateKind == rust::mir::RustAggregateKind::Tuple ||
-         aggregateKind == rust::mir::RustAggregateKind::Adt) &&
-        !tupleType)
-      return assign.emitError("tuple/known ADT aggregate destination is not a "
-                              "tuple");
+    bool singleVariantAdt = isSingleVariantAdt(dest->elementType);
+    if (aggregateKind == rust::mir::RustAggregateKind::Tuple && !tupleType)
+      return assign.emitError("tuple aggregate destination is not a tuple");
     if (aggregateKind == rust::mir::RustAggregateKind::Array && !arrayType)
       return assign.emitError("array aggregate destination is not an array");
+    if (aggregateKind == rust::mir::RustAggregateKind::Adt && !tupleType &&
+        !singleVariantAdt)
+      return assign.emitError("only range tuple and single-variant ADT "
+                              "aggregate destinations can be lifted");
 
     SmallVector<Value> operands;
     Block &operandBlock = aggregate.getBody().front();
     operands.reserve(operandBlock.getOperations().size());
-    if (arrayType &&
-        operandBlock.getOperations().size() != arrayType.getLength())
-      return assign.emitError("array aggregate operand count does not match "
-                              "array length");
+    std::optional<uint64_t> expectedCount =
+        getAggregateElementCount(dest->elementType);
+    if (!expectedCount)
+      return assign.emitError("failed to infer aggregate element count");
+    if (operandBlock.getOperations().size() != *expectedCount)
+      return assign.emitError("aggregate operand count does not match "
+                              "destination type");
 
     for (auto indexedOperand : llvm::enumerate(operandBlock)) {
       Operation *operandOp = &indexedOperand.value();
-      Type expectedType;
-      if (tupleType)
-        expectedType = tupleType.getTypeAtIndex(
-            builder.getI64IntegerAttr(indexedOperand.index()));
-      if (arrayType)
-        expectedType = arrayType.getElementType();
+      Type expectedType = getAggregateElementType(
+          dest->elementType, indexedOperand.index(), builder);
       if (!expectedType)
         expectedType = inferOperandType(operandOp, slots).value_or(Type());
       if (!expectedType)
