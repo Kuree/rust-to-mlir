@@ -145,6 +145,15 @@ class RustTyped_UnaryOp<string mnemonic, string opSummary>
 def RustTyped_NegOp : RustTyped_UnaryOp<"neg", "Typed Rust MIR negation">;
 def RustTyped_NotOp : RustTyped_UnaryOp<"not", "Typed Rust MIR bitwise not">;
 
+def RustTyped_IntCastOp : RustTyped_Op<"int_cast"> {
+  let summary = "Typed Rust MIR integer cast";
+  let arguments = (ins AnyType:$input,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$input attr-dict `:` type($input) `->` type($result)";
+  let hasVerifier = 1;
+}
+
 def RustTyped_MakeAggregateOp : RustTyped_Op<"aggregate"> {
   let summary = "Build a typed Rust aggregate";
   let arguments = (ins Variadic<AnyType>:$values,

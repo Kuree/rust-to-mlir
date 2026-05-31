@@ -170,6 +170,14 @@ bool isLowerableUnaryOp(OpT op, const TypeConverter &converter) {
          isIntegerLikeAfterConversion(op.getResult().getType(), converter);
 }
 
+bool isLowerableIntCast(rustmir::IntCastOp op,
+                        const TypeConverter &converter) {
+  Type inputType = converter.convertType(op.getInput().getType());
+  Type resultType = converter.convertType(op.getResult().getType());
+  return isa_and_nonnull<IntegerType>(inputType) &&
+         isa_and_nonnull<IntegerType>(resultType);
+}
+
 bool isLowerableMakeAggregate(rustmir::MakeAggregateOp op,
                               const TypeConverter &converter) {
   Type converted = converter.convertType(op.getResult().getType());
@@ -612,6 +620,48 @@ struct NotOpConversion : public OpConversionPattern<rustmir::NotOp> {
   }
 };
 
+struct IntCastOpConversion : public OpConversionPattern<rustmir::IntCastOp> {
+  using OpConversionPattern<rustmir::IntCastOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::IntCastOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    auto inputType = dyn_cast_or_null<IntegerType>(
+        getTypeConverter()->convertType(op.getInput().getType()));
+    auto resultType = dyn_cast_or_null<IntegerType>(
+        getTypeConverter()->convertType(op.getResult().getType()));
+    if (!inputType || !resultType)
+      return failure();
+
+    unsigned inputWidth = inputType.getWidth();
+    unsigned resultWidth = resultType.getWidth();
+    if (inputWidth == resultWidth) {
+      rewriter.replaceOp(op, adaptor.getInput());
+      return success();
+    }
+
+    Value replacement;
+    if (inputWidth < resultWidth) {
+      replacement =
+          isSignedRustInteger(op.getInput().getType())
+              ? mlir::rust::createOp<arith::ExtSIOp>(
+                    rewriter, op.getLoc(), resultType, adaptor.getInput())
+                    .getResult()
+              : mlir::rust::createOp<arith::ExtUIOp>(
+                    rewriter, op.getLoc(), resultType, adaptor.getInput())
+                    .getResult();
+    } else {
+      replacement =
+          mlir::rust::createOp<arith::TruncIOp>(
+              rewriter, op.getLoc(), resultType, adaptor.getInput())
+              .getResult();
+    }
+
+    rewriter.replaceOp(op, replacement);
+    return success();
+  }
+};
+
 struct LocalSlotConversion : public OpConversionPattern<rustmir::LocalSlotOp> {
   using OpConversionPattern<rustmir::LocalSlotOp>::OpConversionPattern;
 
@@ -999,6 +1049,10 @@ struct ConvertRustTypedToArithPass
         });
     addUnaryOpLegality<rustmir::NegOp>(target, typeConverterPtr);
     addUnaryOpLegality<rustmir::NotOp>(target, typeConverterPtr);
+    target.addDynamicallyLegalOp<rustmir::IntCastOp>(
+        [&](rustmir::IntCastOp op) {
+          return !isLowerableIntCast(op, typeConverter);
+        });
     target.addDynamicallyLegalOp<rustmir::LocalSlotOp>(
         [&](rustmir::LocalSlotOp op) {
           return !needsTypeConversion(op.getSlot().getType(), typeConverter);
@@ -1124,7 +1178,8 @@ struct ConvertRustTypedToArithPass
         CompareOpConversion<rustmir::GeOp, arith::CmpIPredicate::sge,
                             arith::CmpIPredicate::uge>,
         CheckedAddOpConversion, CheckedSubOpConversion, CheckedMulOpConversion,
-        NegOpConversion, NotOpConversion, LocalSlotConversion, LoadConversion,
+        NegOpConversion, NotOpConversion, IntCastOpConversion,
+        LocalSlotConversion, LoadConversion,
         StoreConversion, BorrowOpConversion, RawAddressOpConversion,
         MakeAggregateConversion, FieldConversion, FieldAddrConversion,
         IndexAddrConversion, SliceFromArrayConversion, PtrMetadataConversion,

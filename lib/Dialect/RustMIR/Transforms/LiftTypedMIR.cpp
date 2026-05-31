@@ -260,6 +260,10 @@ bool isSingleVariantAdt(Type type) {
          isa<rust::mir::TypedTupleType>(adtType.getVariants().front());
 }
 
+bool isRustIntegerCastType(Type type) {
+  return isa<rust::mir::IntType, rust::mir::BoolType>(type);
+}
+
 Type getDynamicallyIndexedElementType(Type aggregateType) {
   if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(aggregateType))
     return arrayType.getElementType();
@@ -1050,11 +1054,30 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     if (!operandOp)
       return assign.emitError("expected cast operand");
 
+    Type operandExpectedType = inferOperandType(operandOp, slots).value_or(Type());
     std::optional<Value> operand =
-        materializeOperand(operandOp, builder, assign.getLoc(), slots, Type(),
-                           assign.getSpanAttr());
+        materializeOperand(operandOp, builder, assign.getLoc(), slots,
+                           operandExpectedType, assign.getSpanAttr());
     if (!operand)
       return assign.emitError("failed to materialize cast operand");
+
+    if (cast.getCastKind() == rust::mir::RustCastKind::IntToInt) {
+      if (!isRustIntegerCastType((*operand).getType()) ||
+          !isRustIntegerCastType(dest->elementType))
+        return assign.emitError("unsupported int-to-int cast types");
+
+      if ((*operand).getType() == dest->elementType) {
+        createStore(builder, assign.getLoc(), *operand, dest->slot);
+        return success();
+      }
+
+      Value result = mlir::rust::createOp<rust::mir::IntCastOp>(
+                         builder, assign.getLoc(), dest->elementType,
+                         *operand, assign.getSpanAttr())
+                         .getResult();
+      createStore(builder, assign.getLoc(), result, dest->slot);
+      return success();
+    }
 
     if (cast.getCastKind() == rust::mir::RustCastKind::PointerCoercion) {
       Type sourcePointee = getPointeeType((*operand).getType());

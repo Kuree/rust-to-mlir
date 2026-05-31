@@ -132,6 +132,8 @@ bool isIntegerLike(Type type) {
   return isa<IntType, IndexType, IntegerType>(type);
 }
 
+bool isRustIntegerCastType(Type type) { return isa<IntType, BoolType>(type); }
+
 Type getPointerPointeeType(Type type) {
   if (auto refType = dyn_cast<TypedRefType>(type))
     return refType.getPointeeType();
@@ -196,6 +198,14 @@ LogicalResult StoreOp::verify() {
     return emitOpError("cannot store an address into itself");
   if (getValue().getType() != elementType)
     return emitOpError("value type must match address element type");
+  return success();
+}
+
+LogicalResult IntCastOp::verify() {
+  if (!isRustIntegerCastType(getInput().getType()))
+    return emitOpError("input must be a Rust integer or bool type");
+  if (!isRustIntegerCastType(getResult().getType()))
+    return emitOpError("result must be a Rust integer or bool type");
   return success();
 }
 
