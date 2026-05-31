@@ -21,9 +21,7 @@ rustup component add rustc-dev llvm-tools-preview rust-src
 cmake -S . -B build -G Ninja \
   -DMLIR_DIR=/usr/lib/llvm-20/lib/cmake/mlir \
   -DLLVM_DIR=/usr/lib/llvm-20/lib/cmake/llvm \
-  -DLLVM_EXTERNAL_LIT=$PWD/env/bin/lit \
-  -DRUST_TO_MLIR_CARGO_EXECUTABLE=/home/keyi/.cargo/bin/cargo \
-  -DRUST_TO_MLIR_RUSTC_EXECUTABLE=/home/keyi/.cargo/bin/rustc
+  -DLLVM_EXTERNAL_LIT=${PATH_TO_LIT}
 ninja -C build
 ```
 
