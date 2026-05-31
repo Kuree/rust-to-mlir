@@ -213,6 +213,7 @@ def Rust_DropOp : Rust_Op<"drop", [NoTerminator, SingleBlock]> {
   let summary = "MIR TerminatorKind::Drop";
   let arguments = (ins I64Attr:$target,
                        OptionalAttr<RustUnwindActionAttr>:$unwind,
+                       OptionalAttr<StrAttr>:$callee_bridge_symbol,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$debug,
                        OptionalAttr<StrAttr>:$span);

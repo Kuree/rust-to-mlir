@@ -231,6 +231,7 @@ type RustMirDropCreate = unsafe extern "C" fn(
     i64,
     MlirStringRef,
     MlirStringRef,
+    MlirStringRef,
 ) -> MlirOperation;
 type RustMirCallCreate = unsafe extern "C" fn(
     MlirLocation,
@@ -590,6 +591,12 @@ struct CAbiBridge {
 }
 
 #[derive(Clone, Eq, PartialEq)]
+struct DropBridge {
+    symbol: String,
+    dropped_type: String,
+}
+
+#[derive(Clone, Eq, PartialEq)]
 enum BridgeResult {
     Void,
     Direct(String),
@@ -678,6 +685,7 @@ enum MirTerminator {
         place: MirPlace,
         target: usize,
         unwind: String,
+        bridge: Option<DropBridge>,
         debug: String,
     },
     Target {
@@ -1283,6 +1291,32 @@ impl CAbiBridge {
     }
 }
 
+impl DropBridge {
+    fn from_place(place: &Place, locals: &[LocalDecl]) -> Option<Self> {
+        let dropped_type = rust_source_type(place.ty(locals).ok()?)?;
+        let symbol = bridge_symbol(&format!("drop_in_place::<{dropped_type}>"));
+        Some(Self {
+            symbol,
+            dropped_type,
+        })
+    }
+
+    fn source(&self) -> String {
+        let mut source = String::new();
+        source.push_str("#[no_mangle]\n");
+        source.push_str("pub extern \"C\" fn ");
+        source.push_str(&self.symbol);
+        source.push_str("(__arg0: *mut ");
+        source.push_str(&self.dropped_type);
+        source.push_str(") {\n");
+        source.push_str("    unsafe { ::core::ptr::drop_in_place::<");
+        source.push_str(&self.dropped_type);
+        source.push_str(">(__arg0); }\n");
+        source.push_str("}\n");
+        source
+    }
+}
+
 fn is_core_std_bridge_path(name: &str) -> bool {
     name.starts_with("core::") || name.starts_with("std::") || name.starts_with("alloc::")
 }
@@ -1538,24 +1572,33 @@ impl MirProgram {
         Self { target, functions }
     }
 
-    fn core_std_bridges(&self) -> Vec<CAbiBridge> {
+    fn core_std_call_bridges(&self) -> Vec<CAbiBridge> {
         let mut bridges = BTreeMap::new();
         for function in &self.functions {
-            function.collect_core_std_bridges(&mut bridges);
+            function.collect_core_std_call_bridges(&mut bridges);
+        }
+        bridges.into_values().collect()
+    }
+
+    fn core_std_drop_bridges(&self) -> Vec<DropBridge> {
+        let mut bridges = BTreeMap::new();
+        for function in &self.functions {
+            function.collect_core_std_drop_bridges(&mut bridges);
         }
         bridges.into_values().collect()
     }
 
     fn core_std_bridge_source(&self) -> Option<String> {
-        let bridges = self.core_std_bridges();
-        if bridges.is_empty() {
+        let call_bridges = self.core_std_call_bridges();
+        let drop_bridges = self.core_std_drop_bridges();
+        if call_bridges.is_empty() && drop_bridges.is_empty() {
             return None;
         }
 
         let mut source = String::new();
         source.push_str("#![allow(improper_ctypes_definitions, non_snake_case)]\n");
         source.push_str("extern crate alloc;\n\n");
-        if bridges.iter().any(CAbiBridge::uses_option_out_pointer) {
+        if call_bridges.iter().any(CAbiBridge::uses_option_out_pointer) {
             source.push_str(
                 r#"#[repr(C)]
 pub struct __RustToMlirTuple0;
@@ -1591,10 +1634,17 @@ impl<T> __RustToMlirOption<T> {
 "#,
             );
         }
-        for bridge in bridges {
+        for bridge in call_bridges {
             source.push_str("// ");
             source.push_str(&bridge.rust_name);
             source.push('\n');
+            source.push_str(&bridge.source());
+            source.push('\n');
+        }
+        for bridge in drop_bridges {
+            source.push_str("// drop_in_place::<");
+            source.push_str(&bridge.dropped_type);
+            source.push_str(">\n");
             source.push_str(&bridge.source());
             source.push('\n');
         }
@@ -1603,15 +1653,21 @@ impl<T> __RustToMlirOption<T> {
 }
 
 impl MirFunction {
-    fn collect_core_std_bridges(&self, bridges: &mut BTreeMap<String, CAbiBridge>) {
+    fn collect_core_std_call_bridges(&self, bridges: &mut BTreeMap<String, CAbiBridge>) {
         for block in &self.blocks {
-            block.terminator.collect_core_std_bridges(bridges);
+            block.terminator.collect_core_std_call_bridges(bridges);
+        }
+    }
+
+    fn collect_core_std_drop_bridges(&self, bridges: &mut BTreeMap<String, DropBridge>) {
+        for block in &self.blocks {
+            block.terminator.collect_core_std_drop_bridges(bridges);
         }
     }
 }
 
 impl MirTerminator {
-    fn collect_core_std_bridges(&self, bridges: &mut BTreeMap<String, CAbiBridge>) {
+    fn collect_core_std_call_bridges(&self, bridges: &mut BTreeMap<String, CAbiBridge>) {
         if let Self::Call {
             metadata: Some(metadata),
             ..
@@ -1622,6 +1678,18 @@ impl MirTerminator {
                     .entry(bridge.symbol.clone())
                     .or_insert_with(|| bridge.clone());
             }
+        }
+    }
+
+    fn collect_core_std_drop_bridges(&self, bridges: &mut BTreeMap<String, DropBridge>) {
+        if let Self::Drop {
+            bridge: Some(bridge),
+            ..
+        } = self
+        {
+            bridges
+                .entry(bridge.symbol.clone())
+                .or_insert_with(|| bridge.clone());
         }
     }
 }
@@ -1782,6 +1850,7 @@ impl MirTerminator {
                 place: MirPlace::from_public(place),
                 target: *target,
                 unwind: unwind_action_symbol(unwind).to_string(),
+                bridge: DropBridge::from_place(place, locals),
                 debug: format!("{terminator:?}"),
             },
             TerminatorKind::Call {
@@ -2331,6 +2400,7 @@ impl MlirEmitter {
                 place,
                 target,
                 unwind,
+                bridge,
                 debug,
             } => {
                 let place = self.place_op(place, span);
@@ -2341,6 +2411,7 @@ impl MlirEmitter {
                         *target as i64,
                         mlir_string(unwind),
                         mlir_string(debug),
+                        mlir_optional_string(bridge.as_ref().map(|bridge| bridge.symbol.as_str())),
                     )
                 }
             }

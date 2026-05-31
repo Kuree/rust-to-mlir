@@ -1002,7 +1002,8 @@ MlirOperation rustMirAssertCreate(MlirLocation location, MlirOperation cond,
 
 MlirOperation rustMirDropCreate(MlirLocation location, MlirOperation place,
                                 int64_t target, MlirStringRef unwind,
-                                MlirStringRef debug) {
+                                MlirStringRef debug,
+                                MlirStringRef calleeBridgeSymbol) {
   MLIRContext *context = unwrap(location).getContext();
   Builder builder(context);
   OperationState state(unwrap(location), "rust.mir.drop");
@@ -1012,6 +1013,7 @@ MlirOperation rustMirDropCreate(MlirLocation location, MlirOperation place,
   addEnumAttr<rustmir::RustUnwindAction, rustmir::RustUnwindActionAttr>(
       context, state, "unwind", unwind,
       rustmir::symbolizeRustUnwindAction);
+  addStringAttr(context, state, "callee_bridge_symbol", calleeBridgeSymbol);
   MlirOperation wrapped = createRegionOperation(state);
   appendOwnedChild(unwrap(wrapped), place);
   return wrapped;

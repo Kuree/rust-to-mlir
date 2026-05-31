@@ -235,6 +235,9 @@ llvm::StringSet<> collectAddressTakenLocals(rust::mir::FuncOp func) {
     if (auto addressOf = dyn_cast_or_null<rust::mir::AddressOfOp>(rvalue))
       markAddressTakenPlace(childAt(addressOf, 0), locals);
   });
+  func.walk([&](rust::mir::DropOp drop) {
+    markAddressTakenPlace(childAt(drop, 0), locals);
+  });
   return locals;
 }
 
@@ -337,6 +340,35 @@ bool isTriviallyDroppableType(Type type) {
     return isTriviallyDroppableType(arrayType.getElementType());
 
   return false;
+}
+
+struct LocalDropImpl {
+  std::string rustName;
+  std::string typedSymbol;
+};
+
+std::optional<LocalDropImpl> getLocalDropImpl(Type type, ModuleOp module) {
+  auto adtType = dyn_cast<rust::mir::AdtType>(type);
+  if (!adtType)
+    return std::nullopt;
+
+  std::string rustName = "<";
+  rustName += adtType.getName().str();
+  rustName += " as std::ops::Drop>::drop";
+  if (SymbolTable::lookupSymbolIn(module, rustName))
+    return LocalDropImpl{rustName, getTypedSymbol(rustName)};
+
+  std::string typedName = getTypedSymbol(rustName);
+  if (SymbolTable::lookupSymbolIn(module, typedName))
+    return LocalDropImpl{rustName, typedName};
+
+  return std::nullopt;
+}
+
+void createTypedGoto(OpBuilder &builder, Location loc, int64_t target,
+                     StringAttr spanAttr) {
+  mlir::rust::createOp<rust::mir::TypedGotoOp>(
+      builder, loc, builder.getI64IntegerAttr(target), spanAttr);
 }
 
 Type getDynamicallyIndexedElementType(Type aggregateType) {
@@ -1748,17 +1780,68 @@ LogicalResult lowerDrop(rust::mir::DropOp op, OpBuilder &builder,
   std::optional<Type> placeType = inferPlaceType(place, slots);
   if (!placeType)
     return op.emitError("failed to infer drop place type");
-  if (!isTriviallyDroppableType(*placeType)) {
-    op.emitError("cannot lift drop for type requiring drop glue: ")
-        << *placeType;
-    return failure();
+
+  Location loc = op.getLoc();
+  StringAttr spanAttr = op.getSpanAttr();
+  if (isTriviallyDroppableType(*placeType)) {
+    createTypedGoto(builder, loc, static_cast<int64_t>(op.getTarget()),
+                    spanAttr);
+    return success();
   }
 
-  mlir::rust::createOp<rust::mir::TypedGotoOp>(
-      builder, op.getLoc(),
-      builder.getI64IntegerAttr(static_cast<int64_t>(op.getTarget())),
-      op.getSpanAttr());
-  return success();
+  std::optional<PlaceAddress> address =
+      materializePlaceAddress(place, builder, loc, slots, spanAttr);
+  if (!address)
+    return op.emitError("failed to materialize drop place address");
+
+  MLIRContext *context = op.getContext();
+  if (StringAttr bridgeSymbol = op.getCalleeBridgeSymbolAttr()) {
+    mlir::rust::createOp<rust::mir::TypedCallOp>(
+        builder, loc, TypeRange(),
+        FlatSymbolRefAttr::get(context, bridgeSymbol.getValue()),
+        ValueRange{address->slot},
+        builder.getStringAttr("core::ptr::drop_in_place"),
+        rust::mir::RustAbiAttr::get(context, rust::mir::RustAbi::C),
+        StringAttr(), StringAttr(), StringAttr(), StringAttr(), StringAttr(),
+        bridgeSymbol, BoolAttr(), op.getTargetAttr(), op.getUnwindAttr(),
+        spanAttr);
+    createTypedGoto(builder, loc, static_cast<int64_t>(op.getTarget()),
+                    spanAttr);
+    return success();
+  }
+
+  if (ModuleOp module = op->getParentOfType<ModuleOp>()) {
+    if (std::optional<LocalDropImpl> dropImpl =
+            getLocalDropImpl(*placeType, module)) {
+      Type selfType = rust::mir::TypedRefType::get(
+          context, rust::mir::RustMutability::Mut, *placeType);
+      Value selfRef =
+          mlir::rust::createOp<rust::mir::BorrowOp>(
+              builder, loc, selfType, address->slot,
+              rust::mir::RustBorrowKindAttr::get(
+                  context, rust::mir::RustBorrowKind::Mut),
+              rust::mir::RustMutabilityAttr::get(
+                  context, rust::mir::RustMutability::Mut),
+              StringAttr(), spanAttr)
+              .getResult();
+
+      mlir::rust::createOp<rust::mir::TypedCallOp>(
+          builder, loc, TypeRange(),
+          FlatSymbolRefAttr::get(context, dropImpl->typedSymbol),
+          ValueRange{selfRef}, builder.getStringAttr(dropImpl->rustName),
+          rust::mir::RustAbiAttr::get(context, rust::mir::RustAbi::Rust),
+          StringAttr(), StringAttr(), StringAttr(), StringAttr(), StringAttr(),
+          StringAttr(), BoolAttr(), op.getTargetAttr(), op.getUnwindAttr(),
+          spanAttr);
+      createTypedGoto(builder, loc, static_cast<int64_t>(op.getTarget()),
+                      spanAttr);
+      return success();
+    }
+  }
+
+  op.emitError("cannot lift drop for type requiring unsupported drop glue: ")
+      << *placeType;
+  return failure();
 }
 
 bool isNoOpStatement(Operation *op) {
@@ -1877,6 +1960,14 @@ struct LiftTypedMIRPass
                          dyn_cast<rust::mir::UnreachableOp>(mirOp)) {
             mlir::rust::createOp<rust::mir::TypedUnreachableOp>(
                 builder, unreachable.getLoc(), unreachable.getSpanAttr());
+            hasTypedTerminator = true;
+          } else if (auto resume = dyn_cast<rust::mir::ResumeOp>(mirOp)) {
+            mlir::rust::createOp<rust::mir::TypedUnreachableOp>(
+                builder, resume.getLoc(), resume.getSpanAttr());
+            hasTypedTerminator = true;
+          } else if (auto abort = dyn_cast<rust::mir::AbortOp>(mirOp)) {
+            mlir::rust::createOp<rust::mir::TypedUnreachableOp>(
+                builder, abort.getLoc(), abort.getSpanAttr());
             hasTypedTerminator = true;
           } else if (auto call = dyn_cast<rust::mir::CallOp>(mirOp)) {
             if (failed(lowerCall(call, builder, slots)))

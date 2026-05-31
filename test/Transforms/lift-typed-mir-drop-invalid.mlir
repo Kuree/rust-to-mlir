@@ -16,4 +16,4 @@ module {
   }
 }
 
-// CHECK: cannot lift drop for type requiring drop glue
+// CHECK: cannot lift drop for type requiring unsupported drop glue
