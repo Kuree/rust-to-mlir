@@ -38,8 +38,13 @@ module {
     %value = rust.typed.load %element : !rust.typed.addr<i32> -> i32
     %sub = rust.typed.subslice %loaded_slice {from_end = true, from_index = 1 : i64, to_index = 1 : i64} : !rust.typed.ref<"shared", !rust.typed.slice<i32>> -> !rust.typed.ref<"shared", !rust.typed.slice<i32>>
     %sub_len = rust.typed.ptr_metadata %sub : !rust.typed.ref<"shared", !rust.typed.slice<i32>> -> i64
+    %range_start = llvm.mlir.constant(1 : i64) : i64
+    %range_len = llvm.mlir.constant(2 : i64) : i64
+    %range = rust.typed.slice_range %loaded_slice[%range_start, %range_len] : !rust.typed.ref<"shared", !rust.typed.slice<i32>>, i64, i64 -> !rust.typed.ref<"shared", !rust.typed.slice<i32>>
+    %range_metadata = rust.typed.ptr_metadata %range : !rust.typed.ref<"shared", !rust.typed.slice<i32>> -> i64
     func.call @consume_i64(%len) : (i64) -> ()
     func.call @consume_i64(%sub_len) : (i64) -> ()
+    func.call @consume_i64(%range_metadata) : (i64) -> ()
     func.call @consume_i32(%value) : (i32) -> ()
     func.return
   }
@@ -99,10 +104,20 @@ module {
 // CHECK: %[[SUB_FAT1:.*]] = llvm.insertvalue %[[SUB_DATA]], %[[SUB_FAT0]][0] : !llvm.struct<(ptr, i64)>
 // CHECK: %[[SUB_FAT:.*]] = llvm.insertvalue %[[SUB_LEN]], %[[SUB_FAT1]][1] : !llvm.struct<(ptr, i64)>
 // CHECK: %[[EXTRACTED_SUB_LEN:.*]] = llvm.extractvalue %[[SUB_FAT]][1] : !llvm.struct<(ptr, i64)>
+// CHECK: %[[RANGE_START:.*]] = llvm.mlir.constant(1 : i64) : i64
+// CHECK: %[[RANGE_LEN:.*]] = llvm.mlir.constant(2 : i64) : i64
+// CHECK: %[[RANGE_DATA_BASE:.*]] = llvm.extractvalue %[[LOADED_SLICE]][0] : !llvm.struct<(ptr, i64)>
+// CHECK: %[[RANGE_DATA:.*]] = llvm.getelementptr %[[RANGE_DATA_BASE]][%[[RANGE_START]]] : (!llvm.ptr, i64) -> !llvm.ptr, i32
+// CHECK: %[[RANGE_FAT0:.*]] = llvm.mlir.undef : !llvm.struct<(ptr, i64)>
+// CHECK: %[[RANGE_FAT1:.*]] = llvm.insertvalue %[[RANGE_DATA]], %[[RANGE_FAT0]][0] : !llvm.struct<(ptr, i64)>
+// CHECK: %[[RANGE_FAT:.*]] = llvm.insertvalue %[[RANGE_LEN]], %[[RANGE_FAT1]][1] : !llvm.struct<(ptr, i64)>
+// CHECK: %[[EXTRACTED_RANGE_LEN:.*]] = llvm.extractvalue %[[RANGE_FAT]][1] : !llvm.struct<(ptr, i64)>
 // CHECK: call @consume_i64(%[[SLICE_LEN]]) : (i64) -> ()
 // CHECK: call @consume_i64(%[[EXTRACTED_SUB_LEN]]) : (i64) -> ()
+// CHECK: call @consume_i64(%[[EXTRACTED_RANGE_LEN]]) : (i64) -> ()
 // CHECK: call @consume_i32(%[[VALUE]]) : (i32) -> ()
 // CHECK-NOT: rust.typed.slice_from_array
 // CHECK-NOT: rust.typed.ptr_metadata
 // CHECK-NOT: rust.typed.subslice
+// CHECK-NOT: rust.typed.slice_range
 // CHECK-NOT: rust.typed.index_addr

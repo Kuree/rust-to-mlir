@@ -172,6 +172,23 @@ Type classifyRustType(MLIRContext *context, llvm::StringRef spelling) {
     return rustmir::SliceType::get(context, s);
   if (s.starts_with("fn(") || s.starts_with("unsafe fn("))
     return rustmir::FnType::get(context, s);
+  if (s.contains("std::ops::RangeInclusive") ||
+      s.contains("core::ops::RangeInclusive") ||
+      s.contains("std::ops::Range\"") || s.contains("core::ops::Range\"")) {
+    Type usizeType = rustmir::IntType::get(context, "usize");
+    SmallVector<Type, 2> fields = {usizeType, usizeType};
+    return rustmir::TypedTupleType::get(context, ArrayRef<Type>(fields));
+  }
+  if (s.contains("std::ops::RangeFrom") ||
+      s.contains("core::ops::RangeFrom") ||
+      s.contains("std::ops::RangeToInclusive") ||
+      s.contains("core::ops::RangeToInclusive") ||
+      s.contains("std::ops::RangeTo\"") ||
+      s.contains("core::ops::RangeTo\"")) {
+    Type usizeType = rustmir::IntType::get(context, "usize");
+    SmallVector<Type, 1> fields = {usizeType};
+    return rustmir::TypedTupleType::get(context, ArrayRef<Type>(fields));
+  }
   if (s.contains("::"))
     return rustmir::AdtType::get(context, s);
   return rustmir::OpaqueType::get(context, s);

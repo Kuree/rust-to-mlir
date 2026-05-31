@@ -209,6 +209,17 @@ def RustTyped_SubsliceOp : RustTyped_Op<"subslice"> {
   let hasVerifier = 1;
 }
 
+def RustTyped_SliceRangeOp : RustTyped_Op<"slice_range"> {
+  let summary = "Compute a typed Rust slice fat pointer from dynamic range bounds";
+  let arguments = (ins AnyType:$source,
+                       AnyType:$start,
+                       AnyType:$length,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$source `[` $start `,` $length `]` attr-dict `:` type($source) `,` type($start) `,` type($length) `->` type($result)";
+  let hasVerifier = 1;
+}
+
 def RustTyped_BorrowOp : RustTyped_Op<"borrow"> {
   let summary = "Create a typed Rust reference to a place address";
   let arguments = (ins AnyType:$slot,

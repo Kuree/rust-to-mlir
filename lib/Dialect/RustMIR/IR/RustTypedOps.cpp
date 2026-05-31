@@ -280,6 +280,30 @@ LogicalResult SubsliceOp::verify() {
   return success();
 }
 
+LogicalResult SliceRangeOp::verify() {
+  Type sourceElementType = getAddressElementType(getSource().getType());
+  if (!sourceElementType)
+    return emitOpError("source must be a typed Rust local slot, place address, "
+                       "reference, or raw pointer");
+  Type sourceSliceElementType =
+      getDynamicallyIndexedElementType(sourceElementType);
+  if (!sourceSliceElementType)
+    return emitOpError("source element type is not sliceable");
+
+  auto resultSliceType = dyn_cast_or_null<TypedSliceType>(
+      getPointerPointeeType(getResult().getType()));
+  if (!resultSliceType)
+    return emitOpError("result type must be a typed Rust slice pointer");
+  if (sourceSliceElementType != resultSliceType.getElementType())
+    return emitOpError("result slice element type must match source element "
+                       "type");
+  if (!isIntegerLike(getStart().getType()))
+    return emitOpError("start must have an integer-like type");
+  if (!isIntegerLike(getLength().getType()))
+    return emitOpError("length must have an integer-like type");
+  return success();
+}
+
 LogicalResult BorrowOp::verify() {
   auto resultType = dyn_cast<TypedRefType>(getResult().getType());
   if (!resultType)

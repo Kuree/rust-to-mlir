@@ -528,6 +528,51 @@ struct SubsliceOpConversion : public OpConversionPattern<rustmir::SubsliceOp> {
   }
 };
 
+struct SliceRangeOpConversion
+    : public OpConversionPattern<rustmir::SliceRangeOp> {
+  using OpConversionPattern<rustmir::SliceRangeOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::SliceRangeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    Type sourceElementType = getAddressElementType(op.getSource().getType());
+    Type elementType = getDynamicallyIndexedElementType(sourceElementType);
+    Type convertedElementType = getTypeConverter()->convertType(elementType);
+    if (!resultType || !sourceElementType || !elementType ||
+        !convertedElementType)
+      return failure();
+
+    Value data;
+    if (isa<rustmir::TypedSliceType>(sourceElementType)) {
+      data = extractFatPointerData(rewriter, op.getLoc(), adaptor.getSource());
+      data = mlir::rust::createOp<LLVM::GEPOp>(
+                 rewriter, op.getLoc(),
+                 LLVM::LLVMPointerType::get(op.getContext()),
+                 convertedElementType, data,
+                 SmallVector<LLVM::GEPArg>{LLVM::GEPArg(adaptor.getStart())})
+                 .getRes();
+    } else {
+      Type convertedSourceElementType =
+          getTypeConverter()->convertType(sourceElementType);
+      if (!convertedSourceElementType)
+        return failure();
+      data = mlir::rust::createOp<LLVM::GEPOp>(
+                 rewriter, op.getLoc(),
+                 LLVM::LLVMPointerType::get(op.getContext()),
+                 convertedSourceElementType, adaptor.getSource(),
+                 SmallVector<LLVM::GEPArg>{LLVM::GEPArg(0),
+                                           LLVM::GEPArg(adaptor.getStart())})
+                 .getRes();
+    }
+
+    Value fatPtr = buildFatPointer(rewriter, op.getLoc(), resultType, data,
+                                   adaptor.getLength());
+    rewriter.replaceOp(op, fatPtr);
+    return success();
+  }
+};
+
 struct LoadOpConversion : public OpConversionPattern<rustmir::LoadOp> {
   using OpConversionPattern<rustmir::LoadOp>::OpConversionPattern;
 
@@ -603,7 +648,8 @@ struct ConvertRustTypedMemoryToLLVMPass
     target.addIllegalOp<rustmir::LocalSlotOp, rustmir::LoadOp, rustmir::StoreOp,
                         rustmir::FieldAddrOp, rustmir::IndexAddrOp,
                         rustmir::SliceFromArrayOp, rustmir::PtrMetadataOp,
-                        rustmir::SubsliceOp, rustmir::BorrowOp,
+                        rustmir::SubsliceOp, rustmir::SliceRangeOp,
+                        rustmir::BorrowOp,
                         rustmir::RawAddressOp>();
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return !hasTypeConversion(op.getFunctionType().getInputs(),
@@ -627,7 +673,8 @@ struct ConvertRustTypedMemoryToLLVMPass
         .add<LocalSlotOpConversion, LoadOpConversion, StoreOpConversion,
              FieldAddrOpConversion, IndexAddrOpConversion,
              SliceFromArrayOpConversion, PtrMetadataOpConversion,
-             SubsliceOpConversion, BorrowOpConversion, RawAddressOpConversion>(
+             SubsliceOpConversion, SliceRangeOpConversion, BorrowOpConversion,
+             RawAddressOpConversion>(
             typeConverter, context);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
         patterns, typeConverter);

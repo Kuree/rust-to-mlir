@@ -847,6 +847,24 @@ struct SubsliceConversion : public OpConversionPattern<rustmir::SubsliceOp> {
   }
 };
 
+struct SliceRangeConversion
+    : public OpConversionPattern<rustmir::SliceRangeOp> {
+  using OpConversionPattern<rustmir::SliceRangeOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::SliceRangeOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return failure();
+    auto newOp = mlir::rust::createOp<rustmir::SliceRangeOp>(
+        rewriter, op.getLoc(), resultType, adaptor.getSource(),
+        adaptor.getStart(), adaptor.getLength(), op.getSpanAttr());
+    rewriter.replaceOp(op, newOp.getResult());
+    return success();
+  }
+};
+
 struct TypedReturnConversion
     : public OpConversionPattern<rustmir::TypedReturnOp> {
   using OpConversionPattern<rustmir::TypedReturnOp>::OpConversionPattern;
@@ -1049,6 +1067,16 @@ struct ConvertRustTypedToArithPass
                                       typeConverter) &&
                  !needsTypeConversion(op.getResult().getType(), typeConverter);
         });
+    target.addDynamicallyLegalOp<rustmir::SliceRangeOp>(
+        [&](rustmir::SliceRangeOp op) {
+          return !needsTypeConversion(op.getSource().getType(),
+                                      typeConverter) &&
+                 !needsTypeConversion(op.getStart().getType(),
+                                      typeConverter) &&
+                 !needsTypeConversion(op.getLength().getType(),
+                                      typeConverter) &&
+                 !needsTypeConversion(op.getResult().getType(), typeConverter);
+        });
     target.addDynamicallyLegalOp<rustmir::TypedReturnOp>(
         [&](rustmir::TypedReturnOp op) {
           return llvm::none_of(op.getValues(), [&](Value value) {
@@ -1110,8 +1138,9 @@ struct ConvertRustTypedToArithPass
         StoreConversion, BorrowOpConversion, RawAddressOpConversion,
         MakeAggregateConversion, FieldConversion, FieldAddrConversion,
         IndexAddrConversion, SliceFromArrayConversion, PtrMetadataConversion,
-        SubsliceConversion, TypedReturnConversion, TypedSwitchIntConversion,
-        TypedAssertConversion, TypedCallConversion>(typeConverter, context);
+        SubsliceConversion, SliceRangeConversion, TypedReturnConversion,
+        TypedSwitchIntConversion, TypedAssertConversion, TypedCallConversion>(
+        typeConverter, context);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
   }
