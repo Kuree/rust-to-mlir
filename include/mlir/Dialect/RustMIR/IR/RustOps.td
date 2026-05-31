@@ -237,6 +237,7 @@ def Rust_CallOp : Rust_Op<"call", [NoTerminator, SingleBlock]> {
                        OptionalAttr<StrAttr>:$callee_output,
                        OptionalAttr<RustAbiAttr>:$callee_abi,
                        OptionalAttr<BoolAttr>:$callee_c_variadic,
+                       OptionalAttr<StrAttr>:$callee_bridge_symbol,
                        OptionalAttr<RustRangeKindAttr>:$range_kind,
                        OptionalAttr<StrAttr>:$span);
   let regions = (region SizedRegion<1>:$body);

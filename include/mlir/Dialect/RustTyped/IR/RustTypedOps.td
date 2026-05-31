@@ -306,6 +306,7 @@ def RustTyped_TypedCallOp : RustTyped_Op<"call"> {
                        OptionalAttr<StrAttr>:$callee_generic_args,
                        OptionalAttr<StrAttr>:$callee_inputs,
                        OptionalAttr<StrAttr>:$callee_output,
+                       OptionalAttr<StrAttr>:$callee_bridge_symbol,
                        OptionalAttr<BoolAttr>:$c_variadic,
                        OptionalAttr<I64Attr>:$target,
                        OptionalAttr<RustUnwindActionAttr>:$unwind,

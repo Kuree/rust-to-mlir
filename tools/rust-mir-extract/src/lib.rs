@@ -16,8 +16,8 @@ use rustc_public::crate_def::CrateDef;
 use rustc_public::mir::alloc::GlobalAlloc;
 use rustc_public::mir::mono::Instance;
 use rustc_public::mir::{
-    AggregateKind, Mutability, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind,
-    TerminatorKind, UnwindAction,
+    AggregateKind, LocalDecl, Mutability, Operand, Place, ProjectionElem, Rvalue, Statement,
+    StatementKind, TerminatorKind, UnwindAction,
 };
 use rustc_public::target::{Endian, MachineInfo};
 use rustc_public::ty::{
@@ -26,6 +26,7 @@ use rustc_public::ty::{
 };
 use rustc_public::CrateItem;
 use rustc_public_bridge::IndexedVal;
+use std::collections::BTreeMap;
 use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -249,6 +250,7 @@ type RustMirCallCreate = unsafe extern "C" fn(
     MlirStringRef,
     MlirStringRef,
     bool,
+    MlirStringRef,
     MlirStringRef,
 ) -> MlirOperation;
 type RustMirTargetTerminatorCreate = unsafe extern "C" fn(
@@ -516,6 +518,7 @@ struct Options {
     crate_root: Option<String>,
     cargo_dir: Option<String>,
     output: Option<String>,
+    bridge_output: Option<String>,
     format: OutputFormat,
     passthrough: Vec<String>,
 }
@@ -565,6 +568,7 @@ impl Default for Options {
             crate_root: None,
             cargo_dir: None,
             output: None,
+            bridge_output: None,
             format: OutputFormat::Bytecode,
             passthrough: Vec::new(),
         }
@@ -574,6 +578,15 @@ impl Default for Options {
 struct MirProgram {
     target: TargetInfo,
     functions: Vec<MirFunction>,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+struct CAbiBridge {
+    symbol: String,
+    rust_name: String,
+    call_path: String,
+    arg_types: Vec<String>,
+    result_type: Option<String>,
 }
 
 struct TargetInfo {
@@ -895,9 +908,7 @@ impl MirType {
                     output: Box::new(Self::from_public_rec(sig.output(), building)),
                 }
             }
-            TyKind::RigidTy(RigidTy::Adt(def, args)) => {
-                Self::adt_from_public(def, &args, building)
-            }
+            TyKind::RigidTy(RigidTy::Adt(def, args)) => Self::adt_from_public(def, &args, building),
             _ => Self::Debug(format!("{ty:?}")),
         }
     }
@@ -998,10 +1009,18 @@ fn type_identity(ty: Ty) -> String {
         }
         TyKind::RigidTy(RigidTy::Slice(element)) => format!("[{}]", type_identity(element)),
         TyKind::RigidTy(RigidTy::Ref(_, pointee, mutability)) => {
-            format!("&{} {}", reference_mutability(mutability), type_identity(pointee))
+            format!(
+                "&{} {}",
+                reference_mutability(mutability),
+                type_identity(pointee)
+            )
         }
         TyKind::RigidTy(RigidTy::RawPtr(pointee, mutability)) => {
-            format!("*{} {}", raw_pointer_mutability(mutability), type_identity(pointee))
+            format!(
+                "*{} {}",
+                raw_pointer_mutability(mutability),
+                type_identity(pointee)
+            )
         }
         TyKind::RigidTy(RigidTy::FnPtr(sig)) => {
             let sig = &sig.value;
@@ -1045,6 +1064,7 @@ struct MirCallMetadata {
     output: String,
     abi: String,
     c_variadic: bool,
+    bridge: Option<CAbiBridge>,
     // Structured range-expression kind when this is a slice/array index call,
     // derived from the callee's generic arguments (the enum symbol, e.g.
     // "FromToInclusive"); `None` for non-range calls.
@@ -1077,7 +1097,12 @@ fn range_kind_symbol(generic_args: &GenericArgs) -> Option<&'static str> {
 }
 
 impl MirCallMetadata {
-    fn from_operand(operand: &Operand) -> Option<Self> {
+    fn from_call(
+        operand: &Operand,
+        args: &[Operand],
+        destination: &Place,
+        locals: &[LocalDecl],
+    ) -> Option<Self> {
         let Operand::Constant(constant) = operand else {
             return None;
         };
@@ -1092,12 +1117,26 @@ impl MirCallMetadata {
         // rustc's mangled name is the stable, canonical identity for the
         // resolved callee instance. For unresolvable callees (e.g. a generic
         // body's polymorphic call) fall back to the readable def path.
-        let mangled = Instance::resolve(def, &generic_args)
+        let resolved_mangled = Instance::resolve(def, &generic_args)
             .ok()
-            .map(|instance| instance.mangled_name().to_string())
+            .map(|instance| instance.mangled_name().to_string());
+        let mangled = resolved_mangled
+            .clone()
             .unwrap_or_else(|| def.name().to_string());
 
         let range_kind = range_kind_symbol(&generic_args).map(String::from);
+        let abi = normalize_abi(&value.abi);
+        let bridge = resolved_mangled.as_deref().and_then(|symbol_key| {
+            CAbiBridge::from_call(
+                &def.name(),
+                symbol_key,
+                &abi,
+                value.c_variadic,
+                args,
+                destination,
+                locals,
+            )
+        });
 
         Some(Self {
             name: def.name().to_string(),
@@ -1106,11 +1145,251 @@ impl MirCallMetadata {
             generic_args: format!("{generic_args:?}"),
             inputs,
             output: "output".to_string(),
-            abi: normalize_abi(&value.abi),
+            abi,
             c_variadic: value.c_variadic,
+            bridge,
             range_kind,
         })
     }
+}
+
+impl CAbiBridge {
+    fn from_call(
+        rust_name: &str,
+        symbol_key: &str,
+        abi: &str,
+        c_variadic: bool,
+        args: &[Operand],
+        destination: &Place,
+        locals: &[LocalDecl],
+    ) -> Option<Self> {
+        if abi != "rust" || c_variadic || !is_core_std_bridge_path(rust_name) {
+            return None;
+        }
+
+        let arg_types = args
+            .iter()
+            .map(|arg| rust_source_type(arg.ty(locals).ok()?))
+            .collect::<Option<Vec<_>>>()?;
+        let destination_ty = destination.ty(locals).ok()?;
+        let result_type = if is_unit_type(destination_ty) {
+            None
+        } else {
+            Some(rust_source_type(destination_ty)?)
+        };
+        let call_path = rust_bridge_call_path(rust_name, &arg_types)?;
+
+        Some(Self {
+            symbol: bridge_symbol(symbol_key),
+            rust_name: rust_name.to_string(),
+            call_path,
+            arg_types,
+            result_type,
+        })
+    }
+
+    fn source(&self) -> String {
+        let mut source = String::new();
+        source.push_str("#[no_mangle]\n");
+        source.push_str("pub extern \"C\" fn ");
+        source.push_str(&self.symbol);
+        source.push('(');
+        for (index, ty) in self.arg_types.iter().enumerate() {
+            if index != 0 {
+                source.push_str(", ");
+            }
+            source.push_str("__arg");
+            source.push_str(&index.to_string());
+            source.push_str(": ");
+            source.push_str(ty);
+        }
+        source.push(')');
+        if let Some(result_type) = &self.result_type {
+            source.push_str(" -> ");
+            source.push_str(result_type);
+        }
+        source.push_str(" {\n    ");
+        if self.result_type.is_none() {
+            source.push_str("let _ = ");
+        }
+        source.push_str(&self.call_path);
+        source.push('(');
+        for index in 0..self.arg_types.len() {
+            if index != 0 {
+                source.push_str(", ");
+            }
+            source.push_str("__arg");
+            source.push_str(&index.to_string());
+        }
+        if self.result_type.is_none() {
+            source.push_str(");\n");
+        } else {
+            source.push_str(")\n");
+        }
+        source.push_str("}\n");
+        source
+    }
+}
+
+fn is_core_std_bridge_path(name: &str) -> bool {
+    name.starts_with("core::") || name.starts_with("std::") || name.starts_with("alloc::")
+}
+
+fn bridge_symbol(symbol_key: &str) -> String {
+    let mut symbol = String::from("__rust_to_mlir_bridge");
+    for byte in symbol_key.bytes() {
+        if byte.is_ascii_alphanumeric() || byte == b'_' {
+            symbol.push(byte as char);
+        } else {
+            symbol.push('_');
+            symbol.push_str(&format!("{byte:02x}"));
+        }
+    }
+    symbol
+}
+
+fn receiver_self_type(arg_type: &str) -> &str {
+    let ty = arg_type.trim();
+    if let Some(rest) = ty.strip_prefix("&mut ") {
+        return rest.trim();
+    }
+    if let Some(rest) = ty.strip_prefix('&') {
+        return rest.trim();
+    }
+    if let Some(rest) = ty.strip_prefix("*mut ") {
+        return rest.trim();
+    }
+    if let Some(rest) = ty.strip_prefix("*const ") {
+        return rest.trim();
+    }
+    ty
+}
+
+fn rust_bridge_call_path(rust_name: &str, arg_types: &[String]) -> Option<String> {
+    if !is_core_std_bridge_path(rust_name) {
+        return None;
+    }
+
+    if let Some(start) = rust_name.find("::<impl ") {
+        let after_marker = start + "::<impl ".len();
+        let rest = &rust_name[after_marker..];
+        let end = rest.find(">::")?;
+        let impl_self = rest[..end].trim();
+        let member = &rest[(end + ">::".len())..];
+        if member.is_empty() {
+            return None;
+        }
+        let self_type = arg_types
+            .first()
+            .map(|ty| receiver_self_type(ty))
+            .filter(|ty| !ty.is_empty())
+            .unwrap_or(impl_self);
+        return Some(format!("<{self_type}>::{member}"));
+    }
+
+    Some(format!("::{rust_name}"))
+}
+
+fn rust_source_generic_args(args: &GenericArgs) -> Option<Vec<String>> {
+    args.0
+        .iter()
+        .filter_map(|arg| match arg {
+            GenericArgKind::Lifetime(_) => None,
+            GenericArgKind::Type(ty) => Some(rust_source_type(*ty)),
+            GenericArgKind::Const(value) => Some(
+                value
+                    .eval_target_usize()
+                    .ok()
+                    .map(|value| value.to_string()),
+            ),
+        })
+        .collect()
+}
+
+fn rust_source_adt_type(def: AdtDef, args: &GenericArgs) -> Option<String> {
+    let name = def.name();
+    let base = name.split('<').next().unwrap_or(&name);
+    if !is_core_std_bridge_path(base) {
+        return None;
+    }
+
+    let args = rust_source_generic_args(args)?;
+    if args.is_empty() {
+        Some(format!("::{base}"))
+    } else {
+        Some(format!("::{base}<{}>", args.join(", ")))
+    }
+}
+
+fn rust_source_type(ty: Ty) -> Option<String> {
+    match ty.kind() {
+        TyKind::RigidTy(RigidTy::Bool) => Some("bool".to_string()),
+        TyKind::RigidTy(RigidTy::Char) => Some("char".to_string()),
+        TyKind::RigidTy(RigidTy::Int(int_ty)) => Some(signed_int_spelling(int_ty).to_string()),
+        TyKind::RigidTy(RigidTy::Uint(uint_ty)) => Some(unsigned_int_spelling(uint_ty).to_string()),
+        TyKind::RigidTy(RigidTy::Float(FloatTy::F32)) => Some("f32".to_string()),
+        TyKind::RigidTy(RigidTy::Float(FloatTy::F64)) => Some("f64".to_string()),
+        TyKind::RigidTy(RigidTy::Never) => Some("!".to_string()),
+        TyKind::RigidTy(RigidTy::Str) => Some("str".to_string()),
+        TyKind::RigidTy(RigidTy::Tuple(elements)) if elements.is_empty() => Some("()".to_string()),
+        TyKind::RigidTy(RigidTy::Tuple(elements)) => {
+            let elements = elements
+                .iter()
+                .map(|element| rust_source_type(*element))
+                .collect::<Option<Vec<_>>>()?;
+            if elements.len() == 1 {
+                Some(format!("({},)", elements[0]))
+            } else {
+                Some(format!("({})", elements.join(", ")))
+            }
+        }
+        TyKind::RigidTy(RigidTy::Array(element, length)) => {
+            let length = length.eval_target_usize().ok()?;
+            Some(format!("[{}; {length}]", rust_source_type(element)?))
+        }
+        TyKind::RigidTy(RigidTy::Slice(element)) => {
+            Some(format!("[{}]", rust_source_type(element)?))
+        }
+        TyKind::RigidTy(RigidTy::RawPtr(pointee, mutability)) => {
+            let prefix = match mutability {
+                Mutability::Mut => "*mut",
+                Mutability::Not => "*const",
+            };
+            Some(format!("{prefix} {}", rust_source_type(pointee)?))
+        }
+        TyKind::RigidTy(RigidTy::Ref(_, pointee, mutability)) => {
+            let prefix = match mutability {
+                Mutability::Mut => "&mut",
+                Mutability::Not => "&",
+            };
+            Some(format!("{prefix} {}", rust_source_type(pointee)?))
+        }
+        TyKind::RigidTy(RigidTy::FnPtr(sig)) => {
+            let sig = &sig.value;
+            let inputs = sig
+                .inputs()
+                .iter()
+                .map(|input| rust_source_type(*input))
+                .collect::<Option<Vec<_>>>()?
+                .join(", ");
+            let output = rust_source_type(sig.output())?;
+            let abi = match normalize_abi(&sig.abi).as_str() {
+                "c" => "extern \"C\" ",
+                _ => "",
+            };
+            if output == "()" {
+                Some(format!("{abi}fn({inputs})"))
+            } else {
+                Some(format!("{abi}fn({inputs}) -> {output}"))
+            }
+        }
+        TyKind::RigidTy(RigidTy::Adt(def, args)) => rust_source_adt_type(def, &args),
+        _ => None,
+    }
+}
+
+fn is_unit_type(ty: Ty) -> bool {
+    matches!(ty.kind(), TyKind::RigidTy(RigidTy::Tuple(elements)) if elements.is_empty())
 }
 
 enum MirRvalue {
@@ -1189,6 +1468,57 @@ impl MirProgram {
 
         Self { target, functions }
     }
+
+    fn core_std_bridges(&self) -> Vec<CAbiBridge> {
+        let mut bridges = BTreeMap::new();
+        for function in &self.functions {
+            function.collect_core_std_bridges(&mut bridges);
+        }
+        bridges.into_values().collect()
+    }
+
+    fn core_std_bridge_source(&self) -> Option<String> {
+        let bridges = self.core_std_bridges();
+        if bridges.is_empty() {
+            return None;
+        }
+
+        let mut source = String::new();
+        source.push_str("#![allow(improper_ctypes_definitions, non_snake_case)]\n");
+        source.push_str("extern crate alloc;\n\n");
+        for bridge in bridges {
+            source.push_str("// ");
+            source.push_str(&bridge.rust_name);
+            source.push('\n');
+            source.push_str(&bridge.source());
+            source.push('\n');
+        }
+        Some(source)
+    }
+}
+
+impl MirFunction {
+    fn collect_core_std_bridges(&self, bridges: &mut BTreeMap<String, CAbiBridge>) {
+        for block in &self.blocks {
+            block.terminator.collect_core_std_bridges(bridges);
+        }
+    }
+}
+
+impl MirTerminator {
+    fn collect_core_std_bridges(&self, bridges: &mut BTreeMap<String, CAbiBridge>) {
+        if let Self::Call {
+            metadata: Some(metadata),
+            ..
+        } = self
+        {
+            if let Some(bridge) = &metadata.bridge {
+                bridges
+                    .entry(bridge.symbol.clone())
+                    .or_insert_with(|| bridge.clone());
+            }
+        }
+    }
 }
 
 impl TargetInfo {
@@ -1257,7 +1587,8 @@ impl MirFunction {
                         MirStatement::from_public(statement, statement_index)
                     })
                     .collect();
-                let terminator = MirTerminator::from_public(&block.terminator.kind, span.clone());
+                let terminator =
+                    MirTerminator::from_public(&block.terminator.kind, span.clone(), body.locals());
                 MirBlockData {
                     index: block_index,
                     span,
@@ -1304,7 +1635,7 @@ impl MirStatement {
 }
 
 impl MirTerminator {
-    fn from_public(terminator: &TerminatorKind, span: String) -> Self {
+    fn from_public(terminator: &TerminatorKind, span: String, locals: &[LocalDecl]) -> Self {
         match terminator {
             TerminatorKind::Return => Self::Return { span },
             TerminatorKind::Goto { target } => Self::Goto {
@@ -1361,7 +1692,7 @@ impl MirTerminator {
                 destination: MirPlace::from_public(destination),
                 target: *target,
                 unwind: unwind_action_symbol(unwind).to_string(),
-                metadata: MirCallMetadata::from_operand(func),
+                metadata: MirCallMetadata::from_call(func, args, destination, locals),
                 debug: format!("{terminator:?}"),
             },
             TerminatorKind::InlineAsm {
@@ -1879,6 +2210,12 @@ impl MlirEmitter {
                         mlir_optional_string(
                             metadata
                                 .as_ref()
+                                .and_then(|metadata| metadata.bridge.as_ref())
+                                .map(|bridge| bridge.symbol.as_str()),
+                        ),
+                        mlir_optional_string(
+                            metadata
+                                .as_ref()
                                 .and_then(|metadata| metadata.range_kind.as_deref()),
                         ),
                     )
@@ -2355,6 +2692,96 @@ impl Drop for MlirEmitter {
     }
 }
 
+fn write_core_std_bridge_source(program: &MirProgram, output: &str) -> io::Result<()> {
+    let source = program.core_std_bridge_source().unwrap_or_else(|| {
+        "#![allow(improper_ctypes_definitions, non_snake_case)]\nextern crate alloc;\n".to_string()
+    });
+    if output == "-" {
+        print!("{source}");
+        return Ok(());
+    }
+    fs::write(output, source)
+}
+
+fn core_std_bridge_library_filename() -> &'static str {
+    #[cfg(target_os = "windows")]
+    {
+        "rust_to_mlir_core_std_bridge.dll"
+    }
+    #[cfg(target_os = "macos")]
+    {
+        "librust_to_mlir_core_std_bridge.dylib"
+    }
+    #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
+    {
+        "librust_to_mlir_core_std_bridge.so"
+    }
+}
+
+fn query_rust_target_libdir_for_bridge() -> Option<PathBuf> {
+    let output = Command::new(rustc_program())
+        .args(["--print", "target-libdir"])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let stdout = String::from_utf8(output.stdout).ok()?;
+    let path = stdout.trim();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+fn compile_core_std_bridge_library(
+    program: &MirProgram,
+    out_dir: &Path,
+) -> io::Result<Option<PathBuf>> {
+    let Some(source) = program.core_std_bridge_source() else {
+        return Ok(None);
+    };
+
+    let source_path = out_dir.join("rust_to_mlir_core_std_bridge.rs");
+    let library_path = out_dir.join(core_std_bridge_library_filename());
+    fs::write(&source_path, source)?;
+
+    let mut command = Command::new(rustc_program());
+    command
+        .arg(&source_path)
+        .arg("--edition=2021")
+        .arg("--crate-name")
+        .arg("rust_to_mlir_core_std_bridge")
+        .arg("--crate-type=cdylib")
+        .arg("-C")
+        .arg("prefer-dynamic")
+        .arg("-Awarnings")
+        .arg("-o")
+        .arg(&library_path);
+
+    #[cfg(all(unix, not(target_os = "macos")))]
+    if let Some(libdir) = query_rust_target_libdir_for_bridge() {
+        command
+            .arg("-C")
+            .arg(format!("link-arg=-Wl,-rpath,{}", libdir.display()));
+    }
+
+    let output = command.output()?;
+    if !output.status.success() {
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let mut message = format!("failed to compile core/std bridge ({})", output.status);
+        if !stderr.trim().is_empty() {
+            message.push_str("\nstderr:\n");
+            message.push_str(stderr.trim());
+        }
+        if !stdout.trim().is_empty() {
+            message.push_str("\nstdout:\n");
+            message.push_str(stdout.trim());
+        }
+        return Err(io::Error::new(io::ErrorKind::Other, message));
+    }
+
+    Ok(Some(library_path))
+}
+
 fn merge_text_modules_to_file(
     inputs: &[PathBuf],
     output: &str,
@@ -2591,6 +3018,12 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
                 }
             }
             "-S" => opts.format = OutputFormat::Text,
+            "--bridge-rust" => {
+                opts.bridge_output = iter.next();
+                if opts.bridge_output.is_none() {
+                    return Err("--bridge-rust requires a path".into());
+                }
+            }
             "-o" | "--output" => {
                 opts.output = iter.next();
                 if opts.output.is_none() {
@@ -2605,6 +3038,9 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
         (true, false) | (false, true) => {}
         (false, false) => return Err("--crate-root or --cargo is required".into()),
         (true, true) => return Err("--crate-root and --cargo are mutually exclusive".into()),
+    }
+    if opts.cargo_dir.is_some() && opts.bridge_output.is_some() {
+        return Err("--bridge-rust is only supported with --crate-root".into());
     }
 
     Ok(opts)
@@ -2653,10 +3089,22 @@ fn rustc_args_for_crate_root_with_name(
     Ok((args, out_dir))
 }
 
-fn run_rustc_public(args: Vec<String>, output: &str, format: OutputFormat) -> io::Result<()> {
+fn run_rustc_public(
+    args: Vec<String>,
+    output: &str,
+    format: OutputFormat,
+    bridge_output: Option<&str>,
+) -> io::Result<()> {
     let mut emit_error = None;
     let result = rustc_public::run!(&args, || {
         let program = MirProgram::collect();
+        if let Some(bridge_output) = bridge_output {
+            if let Err(err) = write_core_std_bridge_source(&program, bridge_output) {
+                eprintln!("rust-mir-extract: failed to emit core/std bridge: {err}");
+                emit_error = Some(err);
+                return std::ops::ControlFlow::Break(());
+            }
+        }
         match MlirEmitter::new().and_then(|emitter| {
             emitter.emit_program(&program)?;
             emitter.write(output, format)
@@ -2689,6 +3137,7 @@ fn run_rustc_public_execute(
     entry_point: &str,
     shared_libs: &[String],
 ) -> io::Result<i32> {
+    let bridge_out_dir = RustcOutputDir::create()?;
     let mut execute_error = None;
     let mut exit_code = None;
     let result = rustc_public::run!(&args, || {
@@ -2706,10 +3155,20 @@ fn run_rustc_public_execute(
                 return std::ops::ControlFlow::Break(());
             }
         }
+        let mut execution_shared_libs = shared_libs.to_vec();
+        match compile_core_std_bridge_library(&program, bridge_out_dir.path()) {
+            Ok(Some(path)) => execution_shared_libs.push(path.to_string_lossy().into_owned()),
+            Ok(None) => {}
+            Err(err) => {
+                eprintln!("rust-mir-extract: failed to compile core/std bridge: {err}");
+                execute_error = Some(err);
+                return std::ops::ControlFlow::Break(());
+            }
+        }
         match MlirEmitter::new().and_then(|emitter| {
             emitter.emit_program(&program)?;
             emitter.lower_to_llvm(true)?;
-            emitter.execute_main(entry_point, shared_libs)
+            emitter.execute_main(entry_point, &execution_shared_libs)
         }) {
             Ok(code) => {
                 exit_code = Some(code);
@@ -2835,7 +3294,7 @@ fn run_rustc_wrapper() -> io::Result<i32> {
 
     let output = cargo_fragment_path(&args, &out_dir)?;
     let output = output.to_string_lossy().into_owned();
-    run_rustc_public(args, &output, OutputFormat::Text)?;
+    run_rustc_public(args, &output, OutputFormat::Text, None)?;
     Ok(0)
 }
 
@@ -2933,7 +3392,12 @@ pub fn run_cli(args: impl IntoIterator<Item = String>) -> i32 {
             return 1;
         }
     };
-    if let Err(err) = run_rustc_public(rustc_args, output, opts.format) {
+    if let Err(err) = run_rustc_public(
+        rustc_args,
+        output,
+        opts.format,
+        opts.bridge_output.as_deref(),
+    ) {
         eprintln!("rust-mir-extract: {err}");
         return 1;
     }

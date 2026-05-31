@@ -1601,18 +1601,21 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
   }
 
   StringRef rustNameRef(*rustName);
-  bool isCAbi = isCAbiCall(op);
+  StringAttr bridgeSymbol = op.getCalleeBridgeSymbolAttr();
+  bool isCAbi = bridgeSymbol || isCAbiCall(op);
   rust::mir::RustAbiAttr abiAttr = rust::mir::RustAbiAttr::get(
       op.getContext(),
       isCAbi ? rust::mir::RustAbi::C : rust::mir::RustAbi::Rust);
-  std::string callee =
-      isCAbi ? getCAbiSymbol(rustNameRef) : getTypedSymbol(rustNameRef);
+  std::string callee = bridgeSymbol ? bridgeSymbol.getValue().str()
+                                    : isCAbi ? getCAbiSymbol(rustNameRef)
+                                             : getTypedSymbol(rustNameRef);
   auto typedCall = mlir::rust::createOp<rust::mir::TypedCallOp>(
       builder, loc, resultTypes,
       FlatSymbolRefAttr::get(op.getContext(), callee), args,
       builder.getStringAttr(*rustName), abiAttr, op.getCalleeDefAttr(),
       op.getCalleeTypeAttr(), op.getCalleeGenericArgsAttr(),
       op.getCalleeInputsAttr(), op.getCalleeOutputAttr(),
+      op.getCalleeBridgeSymbolAttr(),
       op.getCalleeCVariadicAttr(), op.getTargetAttr(), op.getUnwindAttr(),
       spanAttr);
 

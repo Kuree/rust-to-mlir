@@ -1863,8 +1863,9 @@ struct TypedCallConversion : public OpConversionPattern<rustmir::TypedCallOp> {
         adaptor.getArgs(), op.getRustNameAttr(), op.getAbiAttr(),
         op.getCalleeDefAttr(), op.getCalleeTypeAttr(),
         op.getCalleeGenericArgsAttr(), op.getCalleeInputsAttr(),
-        op.getCalleeOutputAttr(), op.getCVariadicAttr(), op.getTargetAttr(),
-        op.getUnwindAttr(), op.getSpanAttr());
+        op.getCalleeOutputAttr(), op.getCalleeBridgeSymbolAttr(),
+        op.getCVariadicAttr(), op.getTargetAttr(), op.getUnwindAttr(),
+        op.getSpanAttr());
     for (NamedAttribute attr : op->getAttrs())
       if (!converted->hasAttr(attr.getName()))
         converted->setAttr(attr.getName(), attr.getValue());

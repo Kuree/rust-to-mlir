@@ -179,7 +179,7 @@ MLIR_CAPI_EXPORTED MlirOperation rustMirCallCreate(
     MlirStringRef calleeDef, MlirStringRef calleeType,
     MlirStringRef calleeGenericArgs, MlirStringRef calleeInputs,
     MlirStringRef calleeOutput, MlirStringRef calleeAbi, bool calleeCVariadic,
-    MlirStringRef rangeKind);
+    MlirStringRef calleeBridgeSymbol, MlirStringRef rangeKind);
 MLIR_CAPI_EXPORTED MlirOperation rustMirTargetTerminatorCreate(
     MlirLocation location, MlirStringRef opName, MlirStringRef kind,
     int64_t target, MlirStringRef debug);

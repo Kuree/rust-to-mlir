@@ -1017,14 +1017,14 @@ MlirOperation rustMirDropCreate(MlirLocation location, MlirOperation place,
   return wrapped;
 }
 
-MlirOperation rustMirCallCreate(
+extern "C" MlirOperation rustMirCallCreate(
     MlirLocation location, MlirOperation func, MlirOperation destination,
     bool hasTarget, int64_t target, MlirStringRef unwind, intptr_t numArgs,
     MlirOperation const *args, MlirStringRef debug, MlirStringRef calleeName,
     MlirStringRef calleeDef, MlirStringRef calleeType,
     MlirStringRef calleeGenericArgs, MlirStringRef calleeInputs,
     MlirStringRef calleeOutput, MlirStringRef calleeAbi, bool calleeCVariadic,
-    MlirStringRef rangeKind) {
+    MlirStringRef calleeBridgeSymbol, MlirStringRef rangeKind) {
   MLIRContext *context = unwrap(location).getContext();
   Builder builder(context);
   OperationState state(unwrap(location), "rust.mir.call");
@@ -1046,6 +1046,7 @@ MlirOperation rustMirCallCreate(
   if (calleeAbi.data || calleeAbi.length != 0)
     state.addAttribute("callee_c_variadic",
                        builder.getBoolAttr(calleeCVariadic));
+  addStringAttr(context, state, "callee_bridge_symbol", calleeBridgeSymbol);
   addEnumAttr<rustmir::RustRangeKind, rustmir::RustRangeKindAttr>(
       context, state, "range_kind", rangeKind,
       rustmir::symbolizeRustRangeKind);

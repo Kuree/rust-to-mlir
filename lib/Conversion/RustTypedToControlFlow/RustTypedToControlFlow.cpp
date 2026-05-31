@@ -100,6 +100,8 @@ void addRustCallAttrs(rust::mir::TypedCallOp from, Operation *to) {
     to->setAttr("rust.rustc_debug.callee_inputs", attr);
   if (auto attr = from.getCalleeOutputAttr())
     to->setAttr("rust.rustc_debug.callee_output", attr);
+  if (auto attr = from.getCalleeBridgeSymbolAttr())
+    to->setAttr("rust.callee_bridge_symbol", attr);
   if (auto attr = from.getUnwindAttr())
     to->setAttr("rust.unwind", attr);
   if (auto attr = from.getTargetAttr())
