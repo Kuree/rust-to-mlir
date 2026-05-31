@@ -1541,6 +1541,19 @@ LogicalResult lowerAssert(rust::mir::AssertOp op, OpBuilder &builder,
   return success();
 }
 
+bool isNoOpStatement(Operation *op) {
+  return isa<rust::mir::FakeReadOp, rust::mir::StorageLiveOp,
+             rust::mir::StorageDeadOp, rust::mir::RetagOp,
+             rust::mir::PlaceMentionOp, rust::mir::AscribeUserTypeOp,
+             rust::mir::CoverageOp, rust::mir::ConstEvalCounterOp,
+             rust::mir::NopOp>(op);
+}
+
+bool isKnownNonNoOpStatement(Operation *op) {
+  return isa<rust::mir::SetDiscriminantOp, rust::mir::DeinitOp,
+             rust::mir::IntrinsicOp>(op);
+}
+
 struct LiftTypedMIRPass
     : public mlir::impl::LiftTypedMIRPassBase<LiftTypedMIRPass> {
   using Base::Base;
@@ -1649,6 +1662,11 @@ struct LiftTypedMIRPass
             if (failed(lowerCall(call, builder, slots)))
               sawFailure = true;
             hasTypedTerminator = true;
+          } else if (isNoOpStatement(&mirOp)) {
+            continue;
+          } else if (isKnownNonNoOpStatement(&mirOp)) {
+            mirOp.emitError("cannot lift non-no-op MIR statement yet");
+            sawFailure = true;
           } else if (isa<rust::mir::UnsupportedStatementOp,
                          rust::mir::UnsupportedTerminatorOp>(mirOp)) {
             mirOp.emitError("cannot lift unsupported MIR operation");
