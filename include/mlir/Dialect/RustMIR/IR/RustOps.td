@@ -194,13 +194,15 @@ def Rust_ResumeOp : Rust_MirrorOp<"resume", "MIR TerminatorKind::Resume">;
 def Rust_AbortOp : Rust_MirrorOp<"abort", "MIR TerminatorKind::Abort">;
 def Rust_ReturnOp : Rust_LeafOp<"return", "MIR TerminatorKind::Return">;
 def Rust_UnreachableOp : Rust_MirrorOp<"unreachable", "MIR TerminatorKind::Unreachable">;
-def Rust_DropOp : Rust_Op<"drop"> {
+def Rust_DropOp : Rust_Op<"drop", [NoTerminator, SingleBlock]> {
   let summary = "MIR TerminatorKind::Drop";
   let arguments = (ins I64Attr:$target,
+                       OptionalAttr<RustUnwindActionAttr>:$unwind,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$debug,
                        OptionalAttr<StrAttr>:$span);
-  let assemblyFormat = "attr-dict";
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
 }
 def Rust_CallOp : Rust_Op<"call", [NoTerminator, SingleBlock]> {
   let summary = "MIR TerminatorKind::Call";

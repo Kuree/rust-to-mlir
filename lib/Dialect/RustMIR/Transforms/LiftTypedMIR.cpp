@@ -302,6 +302,21 @@ bool isRustIntegerCastType(Type type) {
 
 bool isRustFloatCastType(Type type) { return isa<rust::mir::FloatType>(type); }
 
+bool isTriviallyDroppableType(Type type) {
+  if (isa<rust::mir::UnitType, rust::mir::NeverType, rust::mir::BoolType,
+          rust::mir::CharType, rust::mir::IntType, rust::mir::FloatType,
+          rust::mir::TypedRefType, rust::mir::TypedRawPtrType>(type))
+    return true;
+
+  if (auto tupleType = dyn_cast<rust::mir::TypedTupleType>(type))
+    return llvm::all_of(tupleType.getElementTypes(), isTriviallyDroppableType);
+
+  if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(type))
+    return isTriviallyDroppableType(arrayType.getElementType());
+
+  return false;
+}
+
 Type getDynamicallyIndexedElementType(Type aggregateType) {
   if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(aggregateType))
     return arrayType.getElementType();
@@ -1541,6 +1556,28 @@ LogicalResult lowerAssert(rust::mir::AssertOp op, OpBuilder &builder,
   return success();
 }
 
+LogicalResult lowerDrop(rust::mir::DropOp op, OpBuilder &builder,
+                        llvm::StringMap<LocalSlot> &slots) {
+  auto place = dyn_cast_or_null<rust::mir::PlaceOp>(childAt(op, 0));
+  if (!place)
+    return op.emitError("expected drop place");
+
+  std::optional<Type> placeType = inferPlaceType(place, slots);
+  if (!placeType)
+    return op.emitError("failed to infer drop place type");
+  if (!isTriviallyDroppableType(*placeType)) {
+    op.emitError("cannot lift drop for type requiring drop glue: ")
+        << *placeType;
+    return failure();
+  }
+
+  mlir::rust::createOp<rust::mir::TypedGotoOp>(
+      builder, op.getLoc(),
+      builder.getI64IntegerAttr(static_cast<int64_t>(op.getTarget())),
+      op.getSpanAttr());
+  return success();
+}
+
 bool isNoOpStatement(Operation *op) {
   return isa<rust::mir::FakeReadOp, rust::mir::StorageLiveOp,
              rust::mir::StorageDeadOp, rust::mir::RetagOp,
@@ -1672,7 +1709,7 @@ struct LiftTypedMIRPass
             mirOp.emitError("cannot lift unsupported MIR operation");
             sawFailure = true;
           } else if (auto drop = dyn_cast<rust::mir::DropOp>(mirOp)) {
-            if (failed(lowerGotoLike(drop, builder)))
+            if (failed(lowerDrop(drop, builder, slots)))
               sawFailure = true;
             hasTypedTerminator = true;
           } else if (auto inlineAsm = dyn_cast<rust::mir::InlineAsmOp>(mirOp)) {

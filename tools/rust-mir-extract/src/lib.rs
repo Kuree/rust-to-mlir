@@ -11,7 +11,7 @@ use rustc_public::mir::alloc::GlobalAlloc;
 use rustc_public::mir::mono::Instance;
 use rustc_public::mir::{
     AggregateKind, Mutability, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind,
-    TerminatorKind,
+    TerminatorKind, UnwindAction,
 };
 use rustc_public::target::{Endian, MachineInfo};
 use rustc_public::ty::{
@@ -209,6 +209,13 @@ type RustMirSwitchIntCreate = unsafe extern "C" fn(
 ) -> MlirOperation;
 type RustMirAssertCreate =
     unsafe extern "C" fn(MlirLocation, MlirOperation, bool, i64, MlirStringRef) -> MlirOperation;
+type RustMirDropCreate = unsafe extern "C" fn(
+    MlirLocation,
+    MlirOperation,
+    i64,
+    MlirStringRef,
+    MlirStringRef,
+) -> MlirOperation;
 type RustMirCallCreate = unsafe extern "C" fn(
     MlirLocation,
     MlirOperation,
@@ -316,6 +323,7 @@ struct MlirApi {
     goto_create: RustMirGotoCreate,
     switch_int_create: RustMirSwitchIntCreate,
     assert_create: RustMirAssertCreate,
+    drop_create: RustMirDropCreate,
     call_create: RustMirCallCreate,
     target_terminator_create: RustMirTargetTerminatorCreate,
     func_create: RustMirFuncCreate,
@@ -406,6 +414,7 @@ impl MlirApi {
                 goto_create: load_symbol(handle, "rustMirGotoCreate")?,
                 switch_int_create: load_symbol(handle, "rustMirSwitchIntCreate")?,
                 assert_create: load_symbol(handle, "rustMirAssertCreate")?,
+                drop_create: load_symbol(handle, "rustMirDropCreate")?,
                 call_create: load_symbol(handle, "rustMirCallCreate")?,
                 target_terminator_create: load_symbol(handle, "rustMirTargetTerminatorCreate")?,
                 func_create: load_symbol(handle, "rustMirFuncCreate")?,
@@ -614,6 +623,13 @@ enum MirTerminator {
         target: Option<usize>,
         unwind: String,
         metadata: Option<MirCallMetadata>,
+        debug: String,
+    },
+    Drop {
+        span: String,
+        place: MirPlace,
+        target: usize,
+        unwind: String,
         debug: String,
     },
     Target {
@@ -1251,16 +1267,17 @@ impl MirTerminator {
                 target: *target,
                 debug: format!("{terminator:?}"),
             },
-            TerminatorKind::Drop { target, .. } => {
-                let debug = format!("{terminator:?}");
-                Self::Target {
-                    span,
-                    kind: "Drop".to_string(),
-                    target: *target,
-                    debug,
-                    op_name: "rust.mir.drop",
-                }
-            }
+            TerminatorKind::Drop {
+                place,
+                target,
+                unwind,
+            } => Self::Drop {
+                span,
+                place: MirPlace::from_public(place),
+                target: *target,
+                unwind: unwind_action_symbol(unwind).to_string(),
+                debug: format!("{terminator:?}"),
+            },
             TerminatorKind::Call {
                 func,
                 args,
@@ -1273,7 +1290,7 @@ impl MirTerminator {
                 args: args.iter().map(MirOperand::from_public).collect(),
                 destination: MirPlace::from_public(destination),
                 target: *target,
-                unwind: format!("{unwind:?}"),
+                unwind: unwind_action_symbol(unwind).to_string(),
                 metadata: MirCallMetadata::from_operand(func),
                 debug: format!("{terminator:?}"),
             },
@@ -1751,6 +1768,24 @@ impl MlirEmitter {
                     )
                 }
             }
+            MirTerminator::Drop {
+                span,
+                place,
+                target,
+                unwind,
+                debug,
+            } => {
+                let place = self.place_op(place, span);
+                unsafe {
+                    (self.api.drop_create)(
+                        self.location(span),
+                        place,
+                        *target as i64,
+                        mlir_string(unwind),
+                        mlir_string(debug),
+                    )
+                }
+            }
             MirTerminator::Target {
                 span,
                 kind,
@@ -2209,6 +2244,15 @@ fn normalize_abi(abi: &Abi) -> String {
         Abi::Rust => "rust".to_string(),
         Abi::C { .. } => "c".to_string(),
         _ => format!("{abi:?}"),
+    }
+}
+
+fn unwind_action_symbol(unwind: &UnwindAction) -> &'static str {
+    match unwind {
+        UnwindAction::Continue => "Continue",
+        UnwindAction::Unreachable => "Unreachable",
+        UnwindAction::Terminate => "Terminate",
+        UnwindAction::Cleanup(_) => "Cleanup",
     }
 }
 

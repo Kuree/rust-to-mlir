@@ -802,6 +802,23 @@ MlirOperation rustMirAssertCreate(MlirLocation location, MlirOperation cond,
   return wrapped;
 }
 
+MlirOperation rustMirDropCreate(MlirLocation location, MlirOperation place,
+                                int64_t target, MlirStringRef unwind,
+                                MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.drop");
+  state.addAttribute("target", builder.getI64IntegerAttr(target));
+  state.addAttribute("mir_kind", builder.getStringAttr("Drop"));
+  addStringAttr(context, state, "debug", debug);
+  addEnumAttr<rustmir::RustUnwindAction, rustmir::RustUnwindActionAttr>(
+      context, state, "unwind", unwind,
+      rustmir::symbolizeRustUnwindAction);
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), place);
+  return wrapped;
+}
+
 MlirOperation rustMirCallCreate(
     MlirLocation location, MlirOperation func, MlirOperation destination,
     bool hasTarget, int64_t target, MlirStringRef unwind, intptr_t numArgs,
