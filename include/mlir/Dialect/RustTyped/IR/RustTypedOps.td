@@ -317,6 +317,28 @@ def RustTyped_TypedCallOp : RustTyped_Op<"call"> {
   }];
 }
 
+def RustTyped_TypedCallIndirectOp : RustTyped_Op<"call_indirect"> {
+  let summary = "Typed Rust MIR indirect call";
+  let arguments = (ins AnyType:$callee,
+                       Variadic<AnyType>:$args,
+                       OptionalAttr<I64Attr>:$target,
+                       OptionalAttr<RustUnwindActionAttr>:$unwind,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs Variadic<AnyType>:$results);
+  let assemblyFormat = [{
+    $callee `(` $args `)` attr-dict `:` type($callee) `,` functional-type($args, results)
+  }];
+}
+
+def RustTyped_FnAddrOp : RustTyped_Op<"fn_addr"> {
+  let summary = "Typed Rust function address";
+  let arguments = (ins FlatSymbolRefAttr:$callee,
+                       OptionalAttr<StrAttr>:$rust_name,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$callee attr-dict `:` type($result)";
+}
+
 def RustTyped_TypedReturnOp : RustTyped_Op<"return", [Terminator]> {
   let summary = "Typed Rust MIR return";
   let arguments = (ins Variadic<AnyType>:$values, OptionalAttr<StrAttr>:$span);

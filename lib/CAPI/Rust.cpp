@@ -398,6 +398,22 @@ MlirType rustMirOpaqueTypeGet(MlirContext context, MlirStringRef spelling) {
   return wrap(rustmir::OpaqueType::get(unwrap(context), unwrap(spelling)));
 }
 
+MlirType rustMlirFunctionTypeGet(MlirContext context, intptr_t numInputs,
+                                 MlirType const *inputs,
+                                 intptr_t numResults,
+                                 MlirType const *results) {
+  MLIRContext *ctx = unwrap(context);
+  SmallVector<Type> inputTypes;
+  SmallVector<Type> resultTypes;
+  inputTypes.reserve(numInputs);
+  resultTypes.reserve(numResults);
+  for (intptr_t i = 0; i < numInputs; ++i)
+    inputTypes.push_back(unwrap(inputs[i]));
+  for (intptr_t i = 0; i < numResults; ++i)
+    resultTypes.push_back(unwrap(results[i]));
+  return wrap(FunctionType::get(ctx, inputTypes, resultTypes));
+}
+
 MlirType rustTypedSlotTypeGet(MlirContext context, MlirType elementType) {
   return wrap(rustmir::SlotType::get(unwrap(context), unwrap(elementType)));
 }

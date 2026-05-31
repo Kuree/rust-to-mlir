@@ -9,6 +9,7 @@
 #include "RustToLLVM/Support/OpCreateCompat.h"
 #include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/Dialect/Math/IR/Math.h"
 #include "mlir/Dialect/RustMIR/IR/RustMIRDialect.h"
@@ -75,6 +76,14 @@ public:
       if (type.getBitWidth() == 64)
         return Float64Type::get(this->context);
       return Type();
+    });
+    addConversion([this](FunctionType type) -> Type {
+      SmallVector<Type> inputs;
+      SmallVector<Type> results;
+      if (failed(convertTypes(type.getInputs(), inputs)) ||
+          failed(convertTypes(type.getResults(), results)))
+        return Type();
+      return FunctionType::get(this->context, inputs, results);
     });
     addConversion([this](rustmir::UnitType) -> Type {
       return LLVM::LLVMStructType::getLiteral(this->context, {});
@@ -1864,6 +1873,67 @@ struct TypedCallConversion : public OpConversionPattern<rustmir::TypedCallOp> {
   }
 };
 
+struct TypedCallIndirectConversion
+    : public OpConversionPattern<rustmir::TypedCallIndirectOp> {
+  using OpConversionPattern<rustmir::TypedCallIndirectOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::TypedCallIndirectOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    SmallVector<Type> resultTypes;
+    if (failed(
+            getTypeConverter()->convertTypes(op.getResultTypes(), resultTypes)))
+      return failure();
+
+    auto converted = mlir::rust::createOp<rustmir::TypedCallIndirectOp>(
+        rewriter, op.getLoc(), resultTypes, adaptor.getCallee(),
+        adaptor.getArgs(), op.getTargetAttr(), op.getUnwindAttr(),
+        op.getSpanAttr());
+    for (NamedAttribute attr : op->getAttrs())
+      if (!converted->hasAttr(attr.getName()))
+        converted->setAttr(attr.getName(), attr.getValue());
+    rewriter.replaceOp(op, converted->getResults());
+    return success();
+  }
+};
+
+struct FuncConstantConversion : public OpConversionPattern<func::ConstantOp> {
+  using OpConversionPattern<func::ConstantOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(func::ConstantOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<func::ConstantOp>(op, resultType,
+                                                  op.getValueAttr());
+    return success();
+  }
+};
+
+struct FnAddrConversion : public OpConversionPattern<rustmir::FnAddrOp> {
+  using OpConversionPattern<rustmir::FnAddrOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::FnAddrOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return failure();
+
+    auto converted = mlir::rust::createOp<rustmir::FnAddrOp>(
+        rewriter, op.getLoc(), resultType, op.getCalleeAttr(),
+        op.getRustNameAttr(), op.getSpanAttr());
+    for (NamedAttribute attr : op->getAttrs())
+      if (!converted->hasAttr(attr.getName()))
+        converted->setAttr(attr.getName(), attr.getValue());
+    rewriter.replaceOp(op, converted.getResult());
+    return success();
+  }
+};
+
 template <typename OpT>
 void addIntegerBinaryOpLegality(ConversionTarget &target,
                                 const TypeConverter *typeConverter) {
@@ -1921,7 +1991,8 @@ struct ConvertRustTypedToArithPass
   void getDependentDialects(DialectRegistry &registry) const final {
     registry
         .insert<arith::ArithDialect, LLVM::LLVMDialect, cf::ControlFlowDialect,
-                math::MathDialect, rustmir::RustMIRDialect, ub::UBDialect>();
+                func::FuncDialect, math::MathDialect, rustmir::RustMIRDialect,
+                ub::UBDialect>();
   }
 
   void runOnOperation() final {
@@ -1931,12 +2002,23 @@ struct ConvertRustTypedToArithPass
 
     ConversionTarget target(*context);
     target.addLegalDialect<arith::ArithDialect, LLVM::LLVMDialect,
-                           cf::ControlFlowDialect, math::MathDialect,
-                           rustmir::RustMIRDialect, ub::UBDialect>();
+                           cf::ControlFlowDialect, func::FuncDialect,
+                           math::MathDialect, rustmir::RustMIRDialect,
+                           ub::UBDialect>();
     const TypeConverter *typeConverterPtr = &typeConverter;
     target.addDynamicallyLegalOp<rustmir::TypedConstOp>(
         [&](rustmir::TypedConstOp op) {
           return !isLowerableConst(op, typeConverter);
+        });
+    target.addDynamicallyLegalOp<func::ConstantOp>(
+        [&](func::ConstantOp op) {
+          return !needsTypeConversion(op.getResult().getType(),
+                                      typeConverter);
+        });
+    target.addDynamicallyLegalOp<rustmir::FnAddrOp>(
+        [&](rustmir::FnAddrOp op) {
+          return !needsTypeConversion(op.getResult().getType(),
+                                      typeConverter);
         });
     addIntegerOrFloatBinaryOpLegality<rustmir::AddOp>(target,
                                                       typeConverterPtr);
@@ -2095,6 +2177,19 @@ struct ConvertRustTypedToArithPass
                    return needsTypeConversion(value.getType(), typeConverter);
                  });
         });
+    target.addDynamicallyLegalOp<rustmir::TypedCallIndirectOp>(
+        [&](rustmir::TypedCallIndirectOp op) {
+          return !needsTypeConversion(op.getCallee().getType(),
+                                      typeConverter) &&
+                 llvm::none_of(op.getArgs(),
+                               [&](Value value) {
+                                 return needsTypeConversion(value.getType(),
+                                                            typeConverter);
+                               }) &&
+                 llvm::none_of(op.getResults(), [&](Value value) {
+                   return needsTypeConversion(value.getType(), typeConverter);
+                 });
+        });
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
     RewritePatternSet patterns(context);
@@ -2150,7 +2245,9 @@ struct ConvertRustTypedToArithPass
         PtrMetadataConversion, SubsliceConversion, SliceRangeConversion,
         TypedReturnConversion,
         TypedSwitchIntConversion, TypedAssertConversion,
-        FloatMathCallConversion, TypedCallConversion>(typeConverter, context);
+        FloatMathCallConversion, TypedCallConversion,
+        TypedCallIndirectConversion, FuncConstantConversion, FnAddrConversion>(
+        typeConverter, context);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
   }

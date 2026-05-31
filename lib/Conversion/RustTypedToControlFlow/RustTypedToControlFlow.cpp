@@ -108,6 +108,16 @@ void addRustCallAttrs(rust::mir::TypedCallOp from, Operation *to) {
     to->setAttr("rust.c_variadic", attr);
 }
 
+void addRustIndirectCallAttrs(rust::mir::TypedCallIndirectOp from,
+                              Operation *to) {
+  if (auto attr = from.getSpanAttr())
+    to->setAttr("rust.span", attr);
+  if (auto attr = from.getUnwindAttr())
+    to->setAttr("rust.unwind", attr);
+  if (auto attr = from.getTargetAttr())
+    to->setAttr("rust.target", attr);
+}
+
 void setExternalLLVMLinkage(func::FuncOp op) {
   op->setAttr("llvm.linkage",
               LLVM::LinkageAttr::get(op.getContext(),
@@ -401,6 +411,36 @@ struct TypedCallConversion
   }
 };
 
+struct TypedCallIndirectConversion
+    : public OpConversionPattern<rust::mir::TypedCallIndirectOp> {
+  using OpConversionPattern<rust::mir::TypedCallIndirectOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rust::mir::TypedCallIndirectOp call, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    auto funcCall = rewriter.replaceOpWithNewOp<func::CallIndirectOp>(
+        call, call.getResultTypes(), adaptor.getCallee(), adaptor.getArgs());
+    addRustIndirectCallAttrs(call, funcCall.getOperation());
+    return success();
+  }
+};
+
+struct FnAddrConversion : public OpConversionPattern<rust::mir::FnAddrOp> {
+  using OpConversionPattern<rust::mir::FnAddrOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rust::mir::FnAddrOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    auto constant = rewriter.replaceOpWithNewOp<func::ConstantOp>(
+        op, op.getResult().getType(), op.getCalleeAttr());
+    if (auto attr = op.getRustNameAttr())
+      constant->setAttr("rust.rust_name", attr);
+    if (auto attr = op.getSpanAttr())
+      constant->setAttr("rust.span", attr);
+    return success();
+  }
+};
+
 struct ConvertRustTypedToControlFlowPass
     : public mlir::impl::ConvertRustTypedToControlFlowPassBase<
           ConvertRustTypedToControlFlowPass> {
@@ -418,13 +458,15 @@ struct ConvertRustTypedToControlFlowPass
     target.addIllegalOp<rust::mir::TypedBlockOp, rust::mir::TypedGotoOp,
                         rust::mir::TypedReturnOp, rust::mir::TypedSwitchIntOp,
                         rust::mir::TypedUnreachableOp,
-                        rust::mir::TypedAssertOp, rust::mir::TypedCallOp>();
+                        rust::mir::TypedAssertOp, rust::mir::TypedCallOp,
+                        rust::mir::TypedCallIndirectOp,
+                        rust::mir::FnAddrOp>();
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 
     RewritePatternSet patterns(context);
-    patterns
-        .add<TypedBlockConversion, TypedAssertConversion, TypedCallConversion>(
-            context);
+    patterns.add<TypedBlockConversion, TypedAssertConversion,
+                 TypedCallConversion, TypedCallIndirectConversion,
+                 FnAddrConversion>(context);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
   }

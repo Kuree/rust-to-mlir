@@ -39,6 +39,11 @@ bool isAddressTaken(LocalSlotOp op) {
   return false;
 }
 
+bool hasFunctionTypeElement(LocalSlotOp op) {
+  SlotType slotType = op.getSlot().getType();
+  return isa<FunctionType>(slotType.getElementType());
+}
+
 std::optional<int64_t> getConstantIndex(Attribute attr) {
   auto integerAttr = dyn_cast<IntegerAttr>(attr);
   if (!integerAttr)
@@ -416,7 +421,9 @@ LogicalResult TypedCallOp::verify() {
 }
 
 llvm::SmallVector<MemorySlot> LocalSlotOp::getPromotableSlots() {
-  if (isArgumentSlot(*this) || isAddressTaken(*this))
+  if (isAddressTaken(*this))
+    return {};
+  if (isArgumentSlot(*this) && !hasFunctionTypeElement(*this))
     return {};
 
   SlotType slotType = getSlot().getType();

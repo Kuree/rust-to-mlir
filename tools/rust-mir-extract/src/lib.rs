@@ -114,6 +114,8 @@ type RustMirIntTypeGet = unsafe extern "C" fn(MlirContext, MlirStringRef) -> Mli
 type RustMirFloatTypeGet = unsafe extern "C" fn(MlirContext, u32) -> MlirType;
 type RustMirAdtTypeGetIdentified = unsafe extern "C" fn(MlirContext, MlirStringRef) -> MlirType;
 type RustMirAdtTypeSetBody = unsafe extern "C" fn(MlirType, isize, *const MlirType);
+type RustMlirFunctionTypeGet =
+    unsafe extern "C" fn(MlirContext, isize, *const MlirType, isize, *const MlirType) -> MlirType;
 type RustTypedTupleTypeGet = unsafe extern "C" fn(MlirContext, isize, *const MlirType) -> MlirType;
 type RustTypedArrayTypeGet = unsafe extern "C" fn(MlirContext, MlirType, u64) -> MlirType;
 type RustTypedSliceTypeGet = unsafe extern "C" fn(MlirContext, MlirType) -> MlirType;
@@ -294,6 +296,7 @@ struct MlirApi {
     mir_float_type_get: RustMirFloatTypeGet,
     mir_adt_type_get_identified: RustMirAdtTypeGetIdentified,
     mir_adt_type_set_body: RustMirAdtTypeSetBody,
+    function_type_get: RustMlirFunctionTypeGet,
     typed_tuple_type_get: RustTypedTupleTypeGet,
     typed_array_type_get: RustTypedArrayTypeGet,
     typed_slice_type_get: RustTypedSliceTypeGet,
@@ -384,6 +387,7 @@ impl MlirApi {
                 mir_float_type_get: load_symbol(handle, "rustMirFloatTypeGet")?,
                 mir_adt_type_get_identified: load_symbol(handle, "rustMirAdtTypeGetIdentified")?,
                 mir_adt_type_set_body: load_symbol(handle, "rustMirAdtTypeSetBody")?,
+                function_type_get: load_symbol(handle, "rustMlirFunctionTypeGet")?,
                 typed_tuple_type_get: load_symbol(handle, "rustTypedTupleTypeGet")?,
                 typed_array_type_get: load_symbol(handle, "rustTypedArrayTypeGet")?,
                 typed_slice_type_get: load_symbol(handle, "rustTypedSliceTypeGet")?,
@@ -735,6 +739,10 @@ enum MirType {
         pointee: Box<MirType>,
         mutability: String,
     },
+    FnPtr {
+        inputs: Vec<MirType>,
+        output: Box<MirType>,
+    },
 }
 
 fn reference_mutability(mutability: Mutability) -> &'static str {
@@ -814,6 +822,14 @@ impl MirType {
                 pointee,
                 mutability,
             } => format!("*{mutability} {}", pointee.spelling()),
+            Self::FnPtr { inputs, output } => {
+                let inputs = inputs
+                    .iter()
+                    .map(Self::spelling)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("fn({inputs}) -> {}", output.spelling())
+            }
         }
     }
 
@@ -855,6 +871,17 @@ impl MirType {
                 pointee: Box::new(Self::from_public_rec(pointee, building)),
                 mutability: raw_pointer_mutability(mutability).to_string(),
             },
+            TyKind::RigidTy(RigidTy::FnPtr(sig)) => {
+                let sig = &sig.value;
+                Self::FnPtr {
+                    inputs: sig
+                        .inputs()
+                        .iter()
+                        .map(|input| Self::from_public_rec(*input, building))
+                        .collect::<Vec<_>>(),
+                    output: Box::new(Self::from_public_rec(sig.output(), building)),
+                }
+            }
             TyKind::RigidTy(RigidTy::Adt(def, args)) => {
                 Self::adt_from_public(def, &args, building)
             }
@@ -962,6 +989,16 @@ fn type_identity(ty: Ty) -> String {
         }
         TyKind::RigidTy(RigidTy::RawPtr(pointee, mutability)) => {
             format!("*{} {}", raw_pointer_mutability(mutability), type_identity(pointee))
+        }
+        TyKind::RigidTy(RigidTy::FnPtr(sig)) => {
+            let sig = &sig.value;
+            let inputs = sig
+                .inputs()
+                .iter()
+                .map(|input| type_identity(*input))
+                .collect::<Vec<_>>()
+                .join(", ");
+            format!("fn({inputs}) -> {}", type_identity(sig.output()))
         }
         TyKind::RigidTy(RigidTy::Adt(def, args)) => adt_key(&def, &args),
         _ => format!("{ty:?}"),
@@ -1963,6 +2000,26 @@ impl MlirEmitter {
                         self.context,
                         mlir_string(mutability),
                         pointee_type,
+                    )
+                }
+            }
+            MirType::FnPtr { inputs, output } => {
+                let input_types = inputs
+                    .iter()
+                    .map(|input| self.type_from_mir(input))
+                    .collect::<Vec<_>>();
+                let result_types = if matches!(**output, MirType::Unit | MirType::Never) {
+                    Vec::new()
+                } else {
+                    vec![self.type_from_mir(output)]
+                };
+                unsafe {
+                    (self.api.function_type_get)(
+                        self.context,
+                        input_types.len() as isize,
+                        input_types.as_ptr(),
+                        result_types.len() as isize,
+                        result_types.as_ptr(),
                     )
                 }
             }

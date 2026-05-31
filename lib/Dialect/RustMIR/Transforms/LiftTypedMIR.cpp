@@ -11,6 +11,7 @@
 #include "mlir/Dialect/RustMIR/IR/RustOps.h"
 #include "mlir/Dialect/RustMIR/IR/RustTypes.h"
 #include "mlir/Dialect/RustTyped/IR/RustTypedOps.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -100,6 +101,20 @@ template <typename OpT> Operation *childAt(OpT op, unsigned index) {
   return &*std::next(block.begin(), index);
 }
 
+std::optional<std::string>
+extractConstantRustName(rust::mir::ConstantOp constant) {
+  // A function-item callee has no structural model yet, so its type is carried
+  // as an OpaqueType whose spelling is rustc's Debug rendering (e.g. FnDef).
+  if (std::optional<Type> ty = constant.getTy())
+    if (auto opaque = dyn_cast<rust::mir::OpaqueType>(*ty))
+      if (std::optional<std::string> name =
+              extractRustDefName(opaque.getSpelling()))
+        return name;
+  if (std::optional<StringRef> debug = constant.getDebug())
+    return extractRustDefName(*debug);
+  return std::nullopt;
+}
+
 std::optional<std::string> extractCallRustName(rust::mir::CallOp call) {
   if (std::optional<StringRef> calleeName = call.getCalleeName())
     return calleeName->str();
@@ -107,17 +122,7 @@ std::optional<std::string> extractCallRustName(rust::mir::CallOp call) {
   auto callee = dyn_cast_or_null<rust::mir::ConstantOp>(childAt(call, 0));
   if (!callee)
     return std::nullopt;
-
-  // A function-item callee has no structural model yet, so its type is carried
-  // as an OpaqueType whose spelling is rustc's Debug rendering (e.g. FnDef).
-  if (std::optional<Type> ty = callee.getTy())
-    if (auto opaque = dyn_cast<rust::mir::OpaqueType>(*ty))
-      if (std::optional<std::string> name =
-              extractRustDefName(opaque.getSpelling()))
-        return name;
-  if (std::optional<StringRef> debug = callee.getDebug())
-    return extractRustDefName(*debug);
-  return std::nullopt;
+  return extractConstantRustName(callee);
 }
 
 bool isCAbiCall(rust::mir::CallOp call) {
@@ -1127,6 +1132,29 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     if (!operandOp)
       return assign.emitError("expected cast operand");
 
+    if (cast.getCastKind() == rust::mir::RustCastKind::PointerCoercion) {
+      if (auto fnType = dyn_cast<FunctionType>(dest->elementType)) {
+        auto constant = dyn_cast_or_null<rust::mir::ConstantOp>(operandOp);
+        if (!constant)
+          return assign.emitError(
+              "expected function item constant for fn pointer coercion");
+        std::optional<std::string> rustName = extractConstantRustName(constant);
+        if (!rustName)
+          return assign.emitError(
+              "failed to extract function name for fn pointer coercion");
+
+        Value result =
+            mlir::rust::createOp<rust::mir::FnAddrOp>(
+                builder, assign.getLoc(), fnType,
+                FlatSymbolRefAttr::get(assign.getContext(),
+                                       getTypedSymbol(*rustName)),
+                builder.getStringAttr(*rustName), assign.getSpanAttr())
+                .getResult();
+        createStore(builder, assign.getLoc(), result, dest->slot);
+        return success();
+      }
+    }
+
     Type operandExpectedType = inferOperandType(operandOp, slots).value_or(Type());
     std::optional<Value> operand =
         materializeOperand(operandOp, builder, assign.getLoc(), slots,
@@ -1493,20 +1521,21 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
   std::optional<std::string> rustName = extractCallRustName(op);
   std::optional<uint64_t> target = op.getTarget();
   auto destination = dyn_cast_or_null<rust::mir::PlaceOp>(childAt(op, 1));
-  if (!rustName)
-    return op.emitError("expected direct FnDef call callee");
   if (!target)
     return op.emitError("cannot lift call without return target yet");
   if (!destination)
     return op.emitError("expected call destination place");
 
-  StringRef rustNameRef(*rustName);
-  if (isRangeInclusiveNewCallName(rustNameRef))
-    return lowerRangeInclusiveNewCall(op, builder, slots, destination, *target);
-  if (std::optional<RangeIndexKind> rangeKind =
-          getRangeIndexKind(op, rustNameRef))
-    return lowerRangeIndexCall(op, builder, slots, destination, *target,
-                               *rangeKind);
+  if (rustName) {
+    StringRef rustNameRef(*rustName);
+    if (isRangeInclusiveNewCallName(rustNameRef))
+      return lowerRangeInclusiveNewCall(op, builder, slots, destination,
+                                        *target);
+    if (std::optional<RangeIndexKind> rangeKind =
+            getRangeIndexKind(op, rustNameRef))
+      return lowerRangeIndexCall(op, builder, slots, destination, *target,
+                                 *rangeKind);
+  }
 
   Location loc = op.getLoc();
   StringAttr spanAttr = op.getSpanAttr();
@@ -1531,6 +1560,47 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
   if (!isa<rust::mir::UnitType, rust::mir::NeverType>(*destinationType))
     resultTypes.push_back(*destinationType);
 
+  if (!rustName) {
+    Operation *calleeOp = childAt(op, 0);
+    if (!calleeOp)
+      return op.emitError("expected indirect call callee");
+
+    SmallVector<Type> argTypes;
+    argTypes.reserve(args.size());
+    for (Value arg : args)
+      argTypes.push_back(arg.getType());
+    FunctionType expectedCalleeType =
+        FunctionType::get(op.getContext(), argTypes, resultTypes);
+    std::optional<Value> callee = materializeOperand(
+        calleeOp, builder, loc, slots, expectedCalleeType, spanAttr);
+    if (!callee)
+      return op.emitError("failed to materialize indirect call callee");
+
+    auto calleeType = dyn_cast<FunctionType>((*callee).getType());
+    if (!calleeType)
+      return op.emitError("expected indirect call callee to have function type");
+    if (calleeType != expectedCalleeType)
+      return op.emitError("indirect call callee type mismatch, expected ")
+             << expectedCalleeType << ", got " << calleeType;
+
+    auto typedCall = mlir::rust::createOp<rust::mir::TypedCallIndirectOp>(
+        builder, loc, resultTypes, *callee, args, op.getTargetAttr(),
+        op.getUnwindAttr(), spanAttr);
+    if (!resultTypes.empty()) {
+      std::optional<PlaceAddress> dest =
+          materializePlaceAddress(destination, builder, loc, slots, spanAttr);
+      if (!dest)
+        return op.emitError("failed to materialize call destination");
+      createStore(builder, loc, typedCall->getResult(0), dest->slot);
+    }
+
+    mlir::rust::createOp<rust::mir::TypedGotoOp>(
+        builder, loc, builder.getI64IntegerAttr(static_cast<int64_t>(*target)),
+        spanAttr);
+    return success();
+  }
+
+  StringRef rustNameRef(*rustName);
   bool isCAbi = isCAbiCall(op);
   rust::mir::RustAbiAttr abiAttr = rust::mir::RustAbiAttr::get(
       op.getContext(),

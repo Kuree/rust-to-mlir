@@ -59,9 +59,12 @@ MLIR_CAPI_EXPORTED void rustMirAdtTypeSetBody(MlirType adt,
                                               intptr_t numVariants,
                                               MlirType const *variants);
 MLIR_CAPI_EXPORTED MlirType rustMirOpaqueTypeGet(MlirContext context,
-                                                 MlirStringRef spelling);
+                                                  MlirStringRef spelling);
+MLIR_CAPI_EXPORTED MlirType rustMlirFunctionTypeGet(
+    MlirContext context, intptr_t numInputs, MlirType const *inputs,
+    intptr_t numResults, MlirType const *results);
 MLIR_CAPI_EXPORTED MlirType rustTypedSlotTypeGet(MlirContext context,
-                                                 MlirType elementType);
+                                                  MlirType elementType);
 MLIR_CAPI_EXPORTED MlirType rustTypedTupleTypeGet(MlirContext context,
                                                   intptr_t numElementTypes,
                                                   MlirType const *elementTypes);

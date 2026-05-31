@@ -17,6 +17,7 @@ def LiftTypedMIRPass : Pass<"rust-lift-typed-mir", "ModuleOp"> {
   }];
   let constructor = "mlir::rust::createLiftTypedMIRPass()";
   let dependentDialects = [
+    "func::FuncDialect",
     "rust::mir::RustMIRDialect"
   ];
   let options = [

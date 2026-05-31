@@ -63,6 +63,14 @@ public:
         return Float64Type::get(this->context);
       return Type();
     });
+    addConversion([this](FunctionType type) -> Type {
+      SmallVector<Type> inputs;
+      SmallVector<Type> results;
+      if (failed(convertTypes(type.getInputs(), inputs)) ||
+          failed(convertTypes(type.getResults(), results)))
+        return Type();
+      return FunctionType::get(this->context, inputs, results);
+    });
     addConversion([this](rustmir::UnitType) -> Type {
       return LLVM::LLVMStructType::getLiteral(this->context, {});
     });
@@ -684,6 +692,44 @@ struct RawAddressOpConversion
   }
 };
 
+struct FuncConstantConversion : public OpConversionPattern<func::ConstantOp> {
+  using OpConversionPattern<func::ConstantOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(func::ConstantOp op, OpAdaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return failure();
+
+    rewriter.replaceOpWithNewOp<func::ConstantOp>(op, resultType,
+                                                  op.getValueAttr());
+    return success();
+  }
+};
+
+struct FuncCallIndirectConversion
+    : public OpConversionPattern<func::CallIndirectOp> {
+  using OpConversionPattern<func::CallIndirectOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(func::CallIndirectOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    SmallVector<Type> resultTypes;
+    if (failed(
+            getTypeConverter()->convertTypes(op.getResultTypes(), resultTypes)))
+      return failure();
+
+    auto converted = mlir::rust::createOp<func::CallIndirectOp>(
+        rewriter, op.getLoc(), resultTypes, adaptor.getCallee(),
+        adaptor.getCalleeOperands());
+    for (NamedAttribute attr : op->getAttrs())
+      converted->setAttr(attr.getName(), attr.getValue());
+    rewriter.replaceOp(op, converted->getResults());
+    return success();
+  }
+};
+
 struct ConvertRustTypedMemoryToLLVMPass
     : public mlir::impl::ConvertRustTypedMemoryToLLVMPassBase<
           ConvertRustTypedMemoryToLLVMPass> {
@@ -718,6 +764,19 @@ struct ConvertRustTypedMemoryToLLVMPass
       return !hasTypeConversion(op.getOperandTypes(), typeConverter) &&
              !hasTypeConversion(op.getResultTypes(), typeConverter);
     });
+    target.addDynamicallyLegalOp<func::CallIndirectOp>(
+        [&](func::CallIndirectOp op) {
+          return !needsTypeConversion(op.getCallee().getType(),
+                                      typeConverter) &&
+                 !hasTypeConversion(op.getCalleeOperands().getTypes(),
+                                    typeConverter) &&
+                 !hasTypeConversion(op.getResultTypes(), typeConverter);
+        });
+    target.addDynamicallyLegalOp<func::ConstantOp>(
+        [&](func::ConstantOp op) {
+          return !needsTypeConversion(op.getResult().getType(),
+                                      typeConverter);
+        });
     target.addDynamicallyLegalOp<func::ReturnOp>([&](func::ReturnOp op) {
       return !hasTypeConversion(op.getOperandTypes(), typeConverter);
     });
@@ -731,7 +790,8 @@ struct ConvertRustTypedMemoryToLLVMPass
              FieldAddrOpConversion, IndexAddrOpConversion,
              SliceFromArrayOpConversion, PtrMetadataOpConversion,
              SubsliceOpConversion, SliceRangeOpConversion, BorrowOpConversion,
-             RawAddressOpConversion>(
+             RawAddressOpConversion, FuncConstantConversion,
+             FuncCallIndirectConversion>(
             typeConverter, context);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
         patterns, typeConverter);
