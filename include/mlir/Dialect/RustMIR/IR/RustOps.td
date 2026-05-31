@@ -105,6 +105,8 @@ def Rust_AddressOfOp : Rust_Op<"address_of", [NoTerminator, SingleBlock]> {
 def Rust_AggregateOp : Rust_Op<"aggregate", [NoTerminator, SingleBlock]> {
   let summary = "MIR Rvalue::Aggregate";
   let arguments = (ins RustAggregateKindAttr:$aggregate_kind,
+                       OptionalAttr<I64Attr>:$variant_index,
+                       OptionalAttr<StrAttr>:$discriminant,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$span);
   let regions = (region SizedRegion<1>:$body);
@@ -137,7 +139,13 @@ def Rust_CheckedBinaryOp : Rust_Op<"checked_binary_op", [NoTerminator, SingleBlo
   let assemblyFormat = "attr-dict-with-keyword $body";
 }
 def Rust_CopyForDerefOp : Rust_MirrorOp<"copy_for_deref", "MIR Rvalue::CopyForDeref">;
-def Rust_DiscriminantOp : Rust_MirrorOp<"discriminant", "MIR Rvalue::Discriminant">;
+def Rust_DiscriminantOp : Rust_Op<"discriminant", [NoTerminator, SingleBlock]> {
+  let summary = "MIR Rvalue::Discriminant";
+  let arguments = (ins OptionalAttr<StrAttr>:$mir_kind,
+                       OptionalAttr<StrAttr>:$span);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+}
 def Rust_LenOp : Rust_RegionOp<"len", "MIR Rvalue::Len">;
 def Rust_RefOp : Rust_Op<"ref", [NoTerminator, SingleBlock]> {
   let summary = "MIR Rvalue::Ref";
@@ -310,7 +318,13 @@ def Rust_ProjectionSubsliceOp : Rust_Op<"projection_subslice"> {
                        OptionalAttr<StrAttr>:$span);
   let assemblyFormat = "attr-dict";
 }
-def Rust_ProjectionDowncastOp : Rust_MirrorOp<"projection_downcast", "MIR ProjectionElem::Downcast">;
+def Rust_ProjectionDowncastOp : Rust_Op<"projection_downcast"> {
+  let summary = "MIR ProjectionElem::Downcast";
+  let arguments = (ins I64Attr:$variant_index,
+                       OptionalAttr<StrAttr>:$mir_kind,
+                       OptionalAttr<StrAttr>:$span);
+  let assemblyFormat = "attr-dict";
+}
 def Rust_ProjectionOpaqueCastOp : Rust_MirrorOp<"projection_opaque_cast", "MIR ProjectionElem::OpaqueCast">;
 
 // BinOp variants.

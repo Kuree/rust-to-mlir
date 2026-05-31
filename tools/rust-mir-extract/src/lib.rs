@@ -4,6 +4,7 @@ extern crate rustc_driver;
 extern crate rustc_interface;
 extern crate rustc_middle;
 extern crate rustc_public;
+extern crate rustc_public_bridge;
 
 use rustc_public::crate_def::CrateDef;
 use rustc_public::mir::alloc::GlobalAlloc;
@@ -18,6 +19,7 @@ use rustc_public::ty::{
     Ty, TyConstKind, TyKind, UintTy,
 };
 use rustc_public::CrateItem;
+use rustc_public_bridge::IndexedVal;
 use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -130,6 +132,7 @@ type RustMirProjectionConstantIndexCreate =
     unsafe extern "C" fn(MlirLocation, i64, i64, bool) -> MlirOperation;
 type RustMirProjectionSubsliceCreate =
     unsafe extern "C" fn(MlirLocation, i64, i64, bool) -> MlirOperation;
+type RustMirProjectionDowncastCreate = unsafe extern "C" fn(MlirLocation, i64) -> MlirOperation;
 type RustMirPlaceCreate =
     unsafe extern "C" fn(MlirLocation, i64, isize, *const MlirOperation) -> MlirOperation;
 type RustMirCopyCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
@@ -167,11 +170,15 @@ type RustMirRvalueAggregateCreate = unsafe extern "C" fn(
     MlirLocation,
     MlirStringRef,
     MlirStringRef,
+    i64,
+    MlirStringRef,
     isize,
     *const MlirOperation,
 ) -> MlirOperation;
 type RustMirRvalueUseCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
 type RustMirRvalueLenCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
+type RustMirRvalueDiscriminantCreate =
+    unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
 type RustMirRvalueRefCreate = unsafe extern "C" fn(
     MlirLocation,
     MlirStringRef,
@@ -288,6 +295,7 @@ struct MlirApi {
     projection_index_create: RustMirProjectionIndexCreate,
     projection_constant_index_create: RustMirProjectionConstantIndexCreate,
     projection_subslice_create: RustMirProjectionSubsliceCreate,
+    projection_downcast_create: RustMirProjectionDowncastCreate,
     place_create: RustMirPlaceCreate,
     copy_create: RustMirCopyCreate,
     move_create: RustMirMoveCreate,
@@ -301,6 +309,7 @@ struct MlirApi {
     rvalue_aggregate_create: RustMirRvalueAggregateCreate,
     rvalue_use_create: RustMirRvalueUseCreate,
     rvalue_len_create: RustMirRvalueLenCreate,
+    rvalue_discriminant_create: RustMirRvalueDiscriminantCreate,
     rvalue_ref_create: RustMirRvalueRefCreate,
     rvalue_address_of_create: RustMirRvalueAddressOfCreate,
     debug_op_create: RustMirDebugOpCreate,
@@ -376,6 +385,7 @@ impl MlirApi {
                     "rustMirProjectionConstantIndexCreate",
                 )?,
                 projection_subslice_create: load_symbol(handle, "rustMirProjectionSubsliceCreate")?,
+                projection_downcast_create: load_symbol(handle, "rustMirProjectionDowncastCreate")?,
                 place_create: load_symbol(handle, "rustMirPlaceCreate")?,
                 copy_create: load_symbol(handle, "rustMirCopyCreate")?,
                 move_create: load_symbol(handle, "rustMirMoveCreate")?,
@@ -389,6 +399,7 @@ impl MlirApi {
                 rvalue_aggregate_create: load_symbol(handle, "rustMirRvalueAggregateCreate")?,
                 rvalue_use_create: load_symbol(handle, "rustMirRvalueUseCreate")?,
                 rvalue_len_create: load_symbol(handle, "rustMirRvalueLenCreate")?,
+                rvalue_discriminant_create: load_symbol(handle, "rustMirRvalueDiscriminantCreate")?,
                 rvalue_ref_create: load_symbol(handle, "rustMirRvalueRefCreate")?,
                 rvalue_address_of_create: load_symbol(handle, "rustMirRvalueAddressOfCreate")?,
                 debug_op_create: load_symbol(handle, "rustMirDebugOpCreate")?,
@@ -648,6 +659,9 @@ enum MirProjection {
         from: u64,
         to: u64,
         from_end: bool,
+    },
+    Downcast {
+        variant_index: usize,
     },
     Unsupported {
         kind: String,
@@ -1044,12 +1058,17 @@ enum MirRvalue {
     Aggregate {
         kind: String,
         aggregate_kind: String,
+        variant_index: Option<usize>,
+        discriminant: Option<String>,
         operands: Vec<MirOperand>,
     },
     Use {
         operand: Box<MirOperand>,
     },
     Len {
+        place: MirPlace,
+    },
+    Discriminant {
         place: MirPlace,
     },
     Ref {
@@ -1321,6 +1340,9 @@ impl MirProjection {
                 to: *to,
                 from_end: *from_end,
             },
+            ProjectionElem::Downcast(variant_index) => Self::Downcast {
+                variant_index: variant_index.to_index(),
+            },
             _ => {
                 let debug = format!("{elem:?}");
                 let kind = variant_name(&debug).to_string();
@@ -1392,15 +1414,32 @@ impl MirRvalue {
                     debug,
                 }
             }
-            Rvalue::Aggregate(kind, operands) => Self::Aggregate {
-                kind: "Aggregate".to_string(),
-                aggregate_kind: aggregate_kind_name(kind).to_string(),
-                operands: operands.iter().map(MirOperand::from_public).collect(),
-            },
+            Rvalue::Aggregate(kind, operands) => {
+                let (variant_index, discriminant) = match kind {
+                    AggregateKind::Adt(def, variant_index, _, _, _) if def.kind().is_enum() => {
+                        let discr = def.discriminant_for_variant(*variant_index);
+                        (
+                            Some(variant_index.to_index()),
+                            Some(discriminant_text(&discr)),
+                        )
+                    }
+                    _ => (None, None),
+                };
+                Self::Aggregate {
+                    kind: "Aggregate".to_string(),
+                    aggregate_kind: aggregate_kind_name(kind).to_string(),
+                    variant_index,
+                    discriminant,
+                    operands: operands.iter().map(MirOperand::from_public).collect(),
+                }
+            }
             Rvalue::Use(operand) => Self::Use {
                 operand: Box::new(MirOperand::from_public(operand)),
             },
             Rvalue::Len(place) => Self::Len {
+                place: MirPlace::from_public(place),
+            },
+            Rvalue::Discriminant(place) => Self::Discriminant {
                 place: MirPlace::from_public(place),
             },
             Rvalue::Ref(region, borrow_kind, place) => {
@@ -1892,6 +1931,9 @@ impl MlirEmitter {
                     *from_end,
                 )
             },
+            MirProjection::Downcast { variant_index } => unsafe {
+                (self.api.projection_downcast_create)(self.location(span), *variant_index as i64)
+            },
             MirProjection::Unsupported { kind, debug } => unsafe {
                 (self.api.projection_create)(
                     self.location(span),
@@ -2017,17 +2059,23 @@ impl MlirEmitter {
             MirRvalue::Aggregate {
                 kind,
                 aggregate_kind,
+                variant_index,
+                discriminant,
                 operands,
             } => {
                 let operands = operands
                     .iter()
                     .map(|operand| self.operand_op(operand, span))
                     .collect::<Vec<_>>();
+                let variant_index = variant_index.map(|index| index as i64).unwrap_or(-1);
+                let discriminant = discriminant.as_deref().unwrap_or("");
                 unsafe {
                     (self.api.rvalue_aggregate_create)(
                         self.location(span),
                         mlir_string(kind),
                         mlir_string(aggregate_kind),
+                        variant_index,
+                        mlir_string(discriminant),
                         operands.len() as isize,
                         operands.as_ptr(),
                     )
@@ -2040,6 +2088,10 @@ impl MlirEmitter {
             MirRvalue::Len { place } => {
                 let place = self.place_op(place, span);
                 unsafe { (self.api.rvalue_len_create)(self.location(span), place) }
+            }
+            MirRvalue::Discriminant { place } => {
+                let place = self.place_op(place, span);
+                unsafe { (self.api.rvalue_discriminant_create)(self.location(span), place) }
             }
             MirRvalue::Ref {
                 region,
@@ -2282,6 +2334,10 @@ fn terminator_op_name(kind: &str) -> &'static str {
         "InlineAsm" => "rust.mir.inline_asm",
         _ => "rust.mir.unsupported_terminator",
     }
+}
+
+fn discriminant_text(discr: &rustc_public::ty::Discr) -> String {
+    discr.val.to_string()
 }
 
 fn rvalue_op_name(kind: &str) -> &'static str {

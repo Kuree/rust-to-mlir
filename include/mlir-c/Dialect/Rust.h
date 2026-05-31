@@ -95,6 +95,8 @@ MLIR_CAPI_EXPORTED MlirOperation rustMirProjectionConstantIndexCreate(
 MLIR_CAPI_EXPORTED MlirOperation rustMirProjectionSubsliceCreate(
     MlirLocation location, int64_t from, int64_t to, bool fromEnd);
 MLIR_CAPI_EXPORTED MlirOperation
+rustMirProjectionDowncastCreate(MlirLocation location, int64_t variantIndex);
+MLIR_CAPI_EXPORTED MlirOperation
 rustMirPlaceCreate(MlirLocation location, int64_t local,
                    intptr_t numProjections,
                    MlirOperation const *projections);
@@ -123,11 +125,14 @@ MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueCastCreate(
     MlirOperation operand, MlirStringRef type, MlirStringRef debug);
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueAggregateCreate(
     MlirLocation location, MlirStringRef kind, MlirStringRef aggregateKind,
-    intptr_t numOperands, MlirOperation const *operands);
+    int64_t variantIndex, MlirStringRef discriminant, intptr_t numOperands,
+    MlirOperation const *operands);
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueUseCreate(MlirLocation location,
                                                         MlirOperation operand);
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueLenCreate(MlirLocation location,
                                                         MlirOperation place);
+MLIR_CAPI_EXPORTED MlirOperation
+rustMirRvalueDiscriminantCreate(MlirLocation location, MlirOperation place);
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueRefCreate(
     MlirLocation location, MlirStringRef rustRegion, MlirStringRef borrowKind,
     MlirStringRef mutability, MlirOperation place, MlirStringRef debug);

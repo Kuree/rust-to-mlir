@@ -76,6 +76,12 @@ public:
         return Float64Type::get(this->context);
       return Type();
     });
+    addConversion([this](rustmir::UnitType) -> Type {
+      return LLVM::LLVMStructType::getLiteral(this->context, {});
+    });
+    addConversion([this](rustmir::NeverType) -> Type {
+      return LLVM::LLVMStructType::getLiteral(this->context, {});
+    });
     addConversion([this](rustmir::SlotType type) -> Type {
       Type elementType = convertType(type.getElementType());
       if (!elementType)
@@ -107,12 +113,7 @@ public:
                                       type.getLength());
     });
     addConversion([this](rustmir::AdtType type) -> Type {
-      // A single-variant ADT lowers to its variant tuple's LLVM struct; enums
-      // (multiple variants) are not yet lowered as aggregates.
-      ArrayRef<Type> variants = type.getVariants();
-      if (variants.size() != 1)
-        return Type();
-      return convertType(variants.front());
+      return convertAdtType(type);
     });
     addConversion([this](rustmir::TypedSliceType type) -> Type {
       Type elementType = convertType(type.getElementType());
@@ -137,6 +138,27 @@ public:
   }
 
 private:
+  Type convertAdtType(rustmir::AdtType type) {
+    ArrayRef<Type> variants = type.getVariants();
+    if (variants.empty())
+      return Type();
+    if (variants.size() == 1)
+      return convertType(variants.front());
+
+    SmallVector<Type> elementTypes;
+    elementTypes.reserve(variants.size() + 1);
+    elementTypes.push_back(IntegerType::get(this->context, pointerWidth));
+    for (Type variant : variants) {
+      Type converted = convertType(variant);
+      if (!converted)
+        return Type();
+      if (!isa<LLVM::LLVMStructType>(converted))
+        return Type();
+      elementTypes.push_back(converted);
+    }
+    return LLVM::LLVMStructType::getLiteral(this->context, elementTypes);
+  }
+
   MLIRContext *context;
   unsigned pointerWidth;
 };
@@ -357,6 +379,26 @@ std::optional<FloatMathMethod> getFloatMathMethod(rustmir::TypedCallOp op) {
 
 bool isLowerableMakeAggregate(rustmir::MakeAggregateOp op,
                               const TypeConverter &converter) {
+  if (auto adtType = dyn_cast<rustmir::AdtType>(op.getResult().getType())) {
+    ArrayRef<Type> variants = adtType.getVariants();
+    if (variants.size() > 1) {
+      IntegerAttr variantIndexAttr = op.getVariantIndexAttr();
+      if (!variantIndexAttr || variantIndexAttr.getInt() < 0 ||
+          static_cast<size_t>(variantIndexAttr.getInt()) >= variants.size())
+        return false;
+      Type variant = variants[variantIndexAttr.getInt()];
+      if (isa<rustmir::UnitType>(variant))
+        return op.getValues().empty() &&
+               isa_and_nonnull<LLVM::LLVMStructType>(
+                   converter.convertType(op.getResult().getType()));
+      auto tupleType = dyn_cast<rustmir::TypedTupleType>(variant);
+      return tupleType && tupleType.getElementTypes().size() ==
+                              op.getValues().size() &&
+             isa_and_nonnull<LLVM::LLVMStructType>(
+                 converter.convertType(op.getResult().getType()));
+    }
+  }
+
   Type converted = converter.convertType(op.getResult().getType());
   if (auto structType = dyn_cast_or_null<LLVM::LLVMStructType>(converted))
     return structType.getBody().size() == op.getValues().size();
@@ -368,6 +410,19 @@ bool isLowerableMakeAggregate(rustmir::MakeAggregateOp op,
 bool isLowerableField(rustmir::FieldOp op, const TypeConverter &converter) {
   Type aggregateType = converter.convertType(op.getAggregate().getType());
   int64_t index = static_cast<int64_t>(op.getIndex());
+  if (IntegerAttr variantIndexAttr = op.getVariantIndexAttr()) {
+    auto structType = dyn_cast_or_null<LLVM::LLVMStructType>(aggregateType);
+    int64_t variantIndex = variantIndexAttr.getInt();
+    if (!structType || variantIndex < 0 || index < 0)
+      return false;
+    size_t payloadPosition = static_cast<size_t>(variantIndex) + 1;
+    if (payloadPosition >= structType.getBody().size())
+      return false;
+    auto payloadType =
+        dyn_cast<LLVM::LLVMStructType>(structType.getBody()[payloadPosition]);
+    return payloadType &&
+           static_cast<size_t>(index) < payloadType.getBody().size();
+  }
   if (auto structType = dyn_cast_or_null<LLVM::LLVMStructType>(aggregateType))
     return index >= 0 &&
            static_cast<size_t>(index) < structType.getBody().size();
@@ -375,6 +430,17 @@ bool isLowerableField(rustmir::FieldOp op, const TypeConverter &converter) {
     return index >= 0 &&
            static_cast<uint64_t>(index) < arrayType.getNumElements();
   return false;
+}
+
+bool isLowerableDiscriminant(rustmir::TypedDiscriminantOp op,
+                             const TypeConverter &converter) {
+  auto adtType = dyn_cast<rustmir::AdtType>(op.getAggregate().getType());
+  if (!adtType || adtType.getVariants().empty())
+    return false;
+
+  Type aggregateType = converter.convertType(op.getAggregate().getType());
+  Type resultType = converter.convertType(op.getResult().getType());
+  return aggregateType && isa_and_nonnull<IntegerType>(resultType);
 }
 
 std::optional<llvm::APInt> parseIntegerLiteral(StringRef text, unsigned width) {
@@ -484,6 +550,45 @@ Value createIntegerConstant(OpBuilder &builder, Location loc, IntegerType type,
   auto attr = cast<TypedAttr>(IntegerAttr::get(type, value));
   return mlir::rust::createOp<arith::ConstantOp>(builder, loc, type, attr)
       .getResult();
+}
+
+Value castIntegerToType(OpBuilder &builder, Location loc, Value input,
+                        IntegerType resultType, bool isSigned) {
+  auto inputType = dyn_cast<IntegerType>(input.getType());
+  if (!inputType)
+    return {};
+
+  unsigned inputWidth = inputType.getWidth();
+  unsigned resultWidth = resultType.getWidth();
+  if (inputWidth == resultWidth)
+    return input;
+
+  if (inputWidth < resultWidth) {
+    return isSigned
+               ? mlir::rust::createOp<arith::ExtSIOp>(builder, loc,
+                                                       resultType, input)
+                     .getResult()
+               : mlir::rust::createOp<arith::ExtUIOp>(builder, loc,
+                                                       resultType, input)
+                     .getResult();
+  }
+
+  return mlir::rust::createOp<arith::TruncIOp>(builder, loc, resultType, input)
+      .getResult();
+}
+
+Value castAggregateElementToType(OpBuilder &builder, Location loc, Value input,
+                                 Type expectedType, Type rustInputType) {
+  if (input.getType() == expectedType)
+    return input;
+
+  auto inputIntegerType = dyn_cast<IntegerType>(input.getType());
+  auto expectedIntegerType = dyn_cast<IntegerType>(expectedType);
+  if (!inputIntegerType || !expectedIntegerType)
+    return {};
+
+  return castIntegerToType(builder, loc, input, expectedIntegerType,
+                           isSignedRustInteger(rustInputType));
 }
 
 Value createBoolConstant(OpBuilder &builder, Location loc, bool value) {
@@ -1247,11 +1352,92 @@ struct MakeAggregateConversion
                         !isa<LLVM::LLVMArrayType>(resultType)))
       return failure();
 
+    if (auto adtType = dyn_cast<rustmir::AdtType>(op.getResult().getType())) {
+      if (adtType.getVariants().size() > 1) {
+        auto enumType = dyn_cast<LLVM::LLVMStructType>(resultType);
+        IntegerAttr variantIndexAttr = op.getVariantIndexAttr();
+        if (!enumType || !variantIndexAttr)
+          return failure();
+
+        int64_t variantIndex = variantIndexAttr.getInt();
+        int64_t payloadPosition = variantIndex + 1;
+        if (variantIndex < 0 || payloadPosition < 0 ||
+            static_cast<size_t>(payloadPosition) >= enumType.getBody().size())
+          return failure();
+        auto payloadType =
+            dyn_cast<LLVM::LLVMStructType>(enumType.getBody()[payloadPosition]);
+        if (!payloadType ||
+            payloadType.getBody().size() != adaptor.getValues().size())
+          return failure();
+
+        Value aggregate =
+            mlir::rust::createOp<LLVM::UndefOp>(rewriter, op.getLoc(),
+                                                resultType)
+                .getRes();
+        auto tagType = dyn_cast<IntegerType>(enumType.getBody().front());
+        if (!tagType)
+          return failure();
+        llvm::APInt tagValue(tagType.getWidth(), variantIndex);
+        if (StringAttr discriminant = op.getDiscriminantAttr()) {
+          if (!discriminant.getValue().empty()) {
+            std::optional<llvm::APInt> parsed =
+                parseIntegerLiteral(discriminant.getValue(),
+                                    tagType.getWidth());
+            if (!parsed)
+              return failure();
+            tagValue = *parsed;
+          }
+        }
+
+        Value tag = createIntegerConstant(rewriter, op.getLoc(), tagType,
+                                          tagValue);
+        aggregate = mlir::rust::createOp<LLVM::InsertValueOp>(
+                        rewriter, op.getLoc(), aggregate, tag,
+                        ArrayRef<int64_t>(0))
+                        .getRes();
+
+        Value payload =
+            mlir::rust::createOp<LLVM::UndefOp>(rewriter, op.getLoc(),
+                                                payloadType)
+                .getRes();
+        for (auto [index, value] : llvm::enumerate(adaptor.getValues())) {
+          int64_t position = static_cast<int64_t>(index);
+          value = castAggregateElementToType(
+              rewriter, op.getLoc(), value, payloadType.getBody()[position],
+              op.getValues()[index].getType());
+          if (!value)
+            return failure();
+          payload = mlir::rust::createOp<LLVM::InsertValueOp>(
+                        rewriter, op.getLoc(), payload, value,
+                        ArrayRef<int64_t>(position))
+                        .getRes();
+        }
+        aggregate = mlir::rust::createOp<LLVM::InsertValueOp>(
+                        rewriter, op.getLoc(), aggregate, payload,
+                        ArrayRef<int64_t>(payloadPosition))
+                        .getRes();
+        rewriter.replaceOp(op, aggregate);
+        return success();
+      }
+    }
+
     Value aggregate =
         mlir::rust::createOp<LLVM::UndefOp>(rewriter, op.getLoc(), resultType)
             .getRes();
     for (auto [index, value] : llvm::enumerate(adaptor.getValues())) {
       int64_t position = static_cast<int64_t>(index);
+      Type expectedElementType;
+      if (auto structType = dyn_cast<LLVM::LLVMStructType>(resultType))
+        expectedElementType = structType.getBody()[position];
+      else if (auto arrayType = dyn_cast<LLVM::LLVMArrayType>(resultType))
+        expectedElementType = arrayType.getElementType();
+      else
+        return failure();
+      value = castAggregateElementToType(rewriter, op.getLoc(), value,
+                                         expectedElementType,
+                                         op.getValues()[index].getType());
+      if (!value)
+        return failure();
       aggregate = mlir::rust::createOp<LLVM::InsertValueOp>(
                       rewriter, op.getLoc(), aggregate, value,
                       ArrayRef<int64_t>(position))
@@ -1272,11 +1458,68 @@ struct FieldConversion : public OpConversionPattern<rustmir::FieldOp> {
     if (!resultType)
       return failure();
     int64_t position = static_cast<int64_t>(op.getIndex());
+    SmallVector<int64_t> positionPath;
+    if (IntegerAttr variantIndex = op.getVariantIndexAttr()) {
+      positionPath.push_back(variantIndex.getInt() + 1);
+      positionPath.push_back(position);
+    } else {
+      positionPath.push_back(position);
+    }
     Value field = mlir::rust::createOp<LLVM::ExtractValueOp>(
                       rewriter, op.getLoc(), resultType, adaptor.getAggregate(),
-                      ArrayRef<int64_t>(position))
+                      ArrayRef<int64_t>(positionPath))
                       .getRes();
     rewriter.replaceOp(op, field);
+    return success();
+  }
+};
+
+struct DiscriminantConversion
+    : public OpConversionPattern<rustmir::TypedDiscriminantOp> {
+  using OpConversionPattern<rustmir::TypedDiscriminantOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::TypedDiscriminantOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    Type aggregateType =
+        getTypeConverter()->convertType(op.getAggregate().getType());
+    if (!resultType || !aggregateType)
+      return failure();
+
+    auto adtType = dyn_cast<rustmir::AdtType>(op.getAggregate().getType());
+    if (!adtType || adtType.getVariants().empty())
+      return failure();
+
+    if (adtType.getVariants().size() == 1) {
+      auto integerType = dyn_cast<IntegerType>(resultType);
+      if (!integerType)
+        return failure();
+      Value zero = createIntegerConstant(
+          rewriter, op.getLoc(), integerType,
+          llvm::APInt::getZero(integerType.getWidth()));
+      rewriter.replaceOp(op, zero);
+      return success();
+    }
+
+    auto enumType = dyn_cast<LLVM::LLVMStructType>(aggregateType);
+    auto resultIntegerType = dyn_cast<IntegerType>(resultType);
+    if (!enumType || enumType.getBody().empty() || !resultIntegerType)
+      return failure();
+    auto tagType = dyn_cast<IntegerType>(enumType.getBody().front());
+    if (!tagType)
+      return failure();
+
+    Value tag = mlir::rust::createOp<LLVM::ExtractValueOp>(
+                    rewriter, op.getLoc(), tagType, adaptor.getAggregate(),
+                    ArrayRef<int64_t>(0))
+                    .getRes();
+    Value discriminant =
+        castIntegerToType(rewriter, op.getLoc(), tag, resultIntegerType,
+                          isSignedRustInteger(op.getResult().getType()));
+    if (!discriminant)
+      return failure();
+    rewriter.replaceOp(op, discriminant);
     return success();
   }
 };
@@ -1294,7 +1537,7 @@ struct FieldAddrConversion : public OpConversionPattern<rustmir::FieldAddrOp> {
       return failure();
     auto newOp = mlir::rust::createOp<rustmir::FieldAddrOp>(
         rewriter, op.getLoc(), addrType, adaptor.getBase(), op.getIndexAttr(),
-        op.getSpanAttr());
+        op.getVariantIndexAttr(), op.getSpanAttr());
     rewriter.replaceOp(op, newOp.getAddress());
     return success();
   }
@@ -1783,6 +2026,10 @@ struct ConvertRustTypedToArithPass
     target.addDynamicallyLegalOp<rustmir::FieldOp>([&](rustmir::FieldOp op) {
       return !isLowerableField(op, typeConverter);
     });
+    target.addDynamicallyLegalOp<rustmir::TypedDiscriminantOp>(
+        [&](rustmir::TypedDiscriminantOp op) {
+          return !isLowerableDiscriminant(op, typeConverter);
+        });
     target.addDynamicallyLegalOp<rustmir::FieldAddrOp>(
         [&](rustmir::FieldAddrOp op) {
           return !needsTypeConversion(op.getBase().getType(), typeConverter) &&
@@ -1898,9 +2145,10 @@ struct ConvertRustTypedToArithPass
         IntCastOpConversion, NumericCastOpConversion,
         LocalSlotConversion, LoadConversion,
         StoreConversion, BorrowOpConversion, RawAddressOpConversion,
-        MakeAggregateConversion, FieldConversion, FieldAddrConversion,
-        IndexAddrConversion, SliceFromArrayConversion, PtrMetadataConversion,
-        SubsliceConversion, SliceRangeConversion, TypedReturnConversion,
+        MakeAggregateConversion, FieldConversion, DiscriminantConversion,
+        FieldAddrConversion, IndexAddrConversion, SliceFromArrayConversion,
+        PtrMetadataConversion, SubsliceConversion, SliceRangeConversion,
+        TypedReturnConversion,
         TypedSwitchIntConversion, TypedAssertConversion,
         FloatMathCallConversion, TypedCallConversion>(typeConverter, context);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))

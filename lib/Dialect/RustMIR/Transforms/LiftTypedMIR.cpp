@@ -223,7 +223,23 @@ LocalSlot *lookupSlot(llvm::StringMap<LocalSlot> &slots, StringRef name) {
   return &it->second;
 }
 
-Type getIndexedElementType(Type aggregateType, Attribute index) {
+Type getIndexedElementType(Type aggregateType, Attribute index,
+                           IntegerAttr variantIndex = {}) {
+  if (variantIndex) {
+    auto adtType = dyn_cast<rust::mir::AdtType>(aggregateType);
+    if (!adtType)
+      return {};
+    int64_t variant = variantIndex.getInt();
+    if (variant < 0 ||
+        static_cast<size_t>(variant) >= adtType.getVariants().size())
+      return {};
+    auto tupleType =
+        dyn_cast<rust::mir::TypedTupleType>(adtType.getVariants()[variant]);
+    if (!tupleType)
+      return {};
+    return tupleType.getTypeAtIndex(index);
+  }
+
   if (auto destructurable =
           dyn_cast<DestructurableTypeInterface>(aggregateType))
     return destructurable.getTypeAtIndex(index);
@@ -246,12 +262,32 @@ std::optional<uint64_t> getAggregateElementCount(Type aggregateType) {
   return elements->size();
 }
 
+std::optional<uint64_t> getVariantElementCount(rust::mir::AdtType adtType,
+                                               uint64_t variantIndex) {
+  ArrayRef<Type> variants = adtType.getVariants();
+  if (variantIndex >= variants.size())
+    return std::nullopt;
+  if (isa<rust::mir::UnitType>(variants[variantIndex]))
+    return 0;
+  if (auto tupleType =
+          dyn_cast<rust::mir::TypedTupleType>(variants[variantIndex]))
+    return tupleType.getElementTypes().size();
+  return std::nullopt;
+}
+
 Type getAggregateElementType(Type aggregateType, uint64_t index,
                              OpBuilder &builder) {
   if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(aggregateType))
     return arrayType.getElementType();
   return getIndexedElementType(
       aggregateType, builder.getI64IntegerAttr(static_cast<int64_t>(index)));
+}
+
+Type getVariantElementType(rust::mir::AdtType adtType, uint64_t variantIndex,
+                           uint64_t fieldIndex, OpBuilder &builder) {
+  return getIndexedElementType(
+      adtType, builder.getI64IntegerAttr(static_cast<int64_t>(fieldIndex)),
+      builder.getI64IntegerAttr(static_cast<int64_t>(variantIndex)));
 }
 
 bool isSingleVariantAdt(Type type) {
@@ -354,7 +390,14 @@ materializePlaceAddress(rust::mir::PlaceOp place, OpBuilder &builder,
   if (!hasProjection(place))
     return PlaceAddress{address, elementType};
 
+  IntegerAttr variantIndexAttr;
   for (Operation &projectionElem : place.getBody().front()) {
+    if (auto downcast =
+            dyn_cast<rust::mir::ProjectionDowncastOp>(projectionElem)) {
+      variantIndexAttr = downcast.getVariantIndexAttr();
+      continue;
+    }
+
     if (isa<rust::mir::ProjectionDerefOp>(projectionElem)) {
       Type pointeeType = getPointeeType(elementType);
       if (!pointeeType)
@@ -409,16 +452,19 @@ materializePlaceAddress(rust::mir::PlaceOp place, OpBuilder &builder,
     if (!indexAttr)
       return std::nullopt;
 
-    Type fieldType = getIndexedElementType(elementType, indexAttr);
+    Type fieldType =
+        getIndexedElementType(elementType, indexAttr, variantIndexAttr);
     if (!fieldType)
       return std::nullopt;
 
     auto addrType =
         rust::mir::TypedAddrType::get(place.getContext(), fieldType);
     address = mlir::rust::createOp<rust::mir::FieldAddrOp>(
-                  builder, loc, addrType, address, indexAttr, spanAttr)
+                  builder, loc, addrType, address, indexAttr,
+                  variantIndexAttr, spanAttr)
                   .getAddress();
     elementType = fieldType;
+    variantIndexAttr = {};
   }
 
   return PlaceAddress{address, elementType};
@@ -438,7 +484,14 @@ std::optional<Type> inferPlaceType(rust::mir::PlaceOp place,
   if (!hasProjection(place))
     return type;
 
+  IntegerAttr variantIndexAttr;
   for (Operation &projectionElem : place.getBody().front()) {
+    if (auto downcast =
+            dyn_cast<rust::mir::ProjectionDowncastOp>(projectionElem)) {
+      variantIndexAttr = downcast.getVariantIndexAttr();
+      continue;
+    }
+
     if (isa<rust::mir::ProjectionDerefOp>(projectionElem)) {
       type = getPointeeType(type);
       if (!type)
@@ -466,9 +519,10 @@ std::optional<Type> inferPlaceType(rust::mir::PlaceOp place,
     if (!indexAttr)
       return std::nullopt;
 
-    type = getIndexedElementType(type, indexAttr);
+    type = getIndexedElementType(type, indexAttr, variantIndexAttr);
     if (!type)
       return std::nullopt;
+    variantIndexAttr = {};
   }
 
   return type;
@@ -677,8 +731,9 @@ std::optional<Value> createRangeField(OpBuilder &builder, Location loc,
   if (!fieldType || fieldType != indexType)
     return std::nullopt;
   return mlir::rust::createOp<rust::mir::FieldOp>(
-             builder, loc, indexType, range, static_cast<int64_t>(index),
-             spanAttr)
+             builder, loc, indexType, range,
+             builder.getI64IntegerAttr(static_cast<int64_t>(index)),
+             IntegerAttr(), spanAttr)
       .getResult();
 }
 
@@ -720,7 +775,7 @@ LogicalResult lowerRangeInclusiveNewCall(rust::mir::CallOp op,
 
   Value range = mlir::rust::createOp<rust::mir::MakeAggregateOp>(
                     builder, loc, dest->elementType, ValueRange{*start, *end},
-                    spanAttr)
+                    IntegerAttr(), StringAttr(), spanAttr)
                     .getResult();
   createStore(builder, loc, range, dest->slot);
   mlir::rust::createOp<rust::mir::TypedGotoOp>(
@@ -1009,7 +1064,8 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
 
       Value tuple = mlir::rust::createOp<rust::mir::MakeAggregateOp>(
                         builder, loc, dest->elementType,
-                        ValueRange{value, overflow}, spanAttr)
+                        ValueRange{value, overflow}, IntegerAttr(),
+                        StringAttr(), spanAttr)
                         .getResult();
       createStore(builder, loc, tuple, dest->slot);
       return success();
@@ -1143,21 +1199,32 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
 
     auto tupleType = dyn_cast<rust::mir::TypedTupleType>(dest->elementType);
     auto arrayType = dyn_cast<rust::mir::TypedArrayType>(dest->elementType);
+    auto adtType = dyn_cast<rust::mir::AdtType>(dest->elementType);
     bool singleVariantAdt = isSingleVariantAdt(dest->elementType);
     if (aggregateKind == rust::mir::RustAggregateKind::Tuple && !tupleType)
       return assign.emitError("tuple aggregate destination is not a tuple");
     if (aggregateKind == rust::mir::RustAggregateKind::Array && !arrayType)
       return assign.emitError("array aggregate destination is not an array");
     if (aggregateKind == rust::mir::RustAggregateKind::Adt && !tupleType &&
-        !singleVariantAdt)
-      return assign.emitError("only range tuple and single-variant ADT "
-                              "aggregate destinations can be lifted");
+        !singleVariantAdt && !adtType)
+      return assign.emitError("ADT aggregate destination is not an ADT");
+    IntegerAttr variantIndexAttr = aggregate.getVariantIndexAttr();
+    if (aggregateKind == rust::mir::RustAggregateKind::Adt && adtType &&
+        adtType.getVariants().size() > 1 && !variantIndexAttr)
+      return assign.emitError("ADT enum aggregate is missing variant index");
 
     SmallVector<Value> operands;
     Block &operandBlock = aggregate.getBody().front();
     operands.reserve(operandBlock.getOperations().size());
-    std::optional<uint64_t> expectedCount =
-        getAggregateElementCount(dest->elementType);
+    std::optional<uint64_t> expectedCount;
+    std::optional<uint64_t> variantIndex;
+    if (aggregateKind == rust::mir::RustAggregateKind::Adt && adtType &&
+        adtType.getVariants().size() > 1) {
+      variantIndex = static_cast<uint64_t>(variantIndexAttr.getInt());
+      expectedCount = getVariantElementCount(adtType, *variantIndex);
+    } else {
+      expectedCount = getAggregateElementCount(dest->elementType);
+    }
     if (!expectedCount)
       return assign.emitError("failed to infer aggregate element count");
     if (operandBlock.getOperations().size() != *expectedCount)
@@ -1166,8 +1233,12 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
 
     for (auto indexedOperand : llvm::enumerate(operandBlock)) {
       Operation *operandOp = &indexedOperand.value();
-      Type expectedType = getAggregateElementType(
-          dest->elementType, indexedOperand.index(), builder);
+      Type expectedType =
+          variantIndex ? getVariantElementType(adtType, *variantIndex,
+                                               indexedOperand.index(), builder)
+                       : getAggregateElementType(dest->elementType,
+                                                 indexedOperand.index(),
+                                                 builder);
       if (!expectedType)
         expectedType = inferOperandType(operandOp, slots).value_or(Type());
       if (!expectedType)
@@ -1183,9 +1254,34 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
 
     Value result = mlir::rust::createOp<rust::mir::MakeAggregateOp>(
                        builder, assign.getLoc(), dest->elementType, operands,
+                       variantIndexAttr, aggregate.getDiscriminantAttr(),
                        assign.getSpanAttr())
                        .getResult();
     createStore(builder, assign.getLoc(), result, dest->slot);
+    return success();
+  }
+
+  if (auto discriminant = dyn_cast<rust::mir::DiscriminantOp>(rvalue)) {
+    auto sourcePlace =
+        dyn_cast_or_null<rust::mir::PlaceOp>(childAt(discriminant, 0));
+    if (!sourcePlace)
+      return assign.emitError("expected discriminant source place");
+
+    std::optional<Type> sourceType = inferPlaceType(sourcePlace, slots);
+    if (!sourceType)
+      return assign.emitError("failed to infer discriminant source type");
+
+    std::optional<Value> aggregateValue =
+        materializePlaceRead(sourcePlace, builder, assign.getLoc(), slots,
+                             *sourceType, assign.getSpanAttr());
+    if (!aggregateValue)
+      return assign.emitError("failed to materialize discriminant source");
+
+    Value value = mlir::rust::createOp<rust::mir::TypedDiscriminantOp>(
+                      builder, assign.getLoc(), dest->elementType,
+                      *aggregateValue, assign.getSpanAttr())
+                      .getResult();
+    createStore(builder, assign.getLoc(), value, dest->slot);
     return success();
   }
 
@@ -1543,6 +1639,11 @@ struct LiftTypedMIRPass
           } else if (auto returnOp = dyn_cast<rust::mir::ReturnOp>(mirOp)) {
             if (failed(lowerReturn(returnOp, builder, slots)))
               sawFailure = true;
+            hasTypedTerminator = true;
+          } else if (auto unreachable =
+                         dyn_cast<rust::mir::UnreachableOp>(mirOp)) {
+            mlir::rust::createOp<rust::mir::TypedUnreachableOp>(
+                builder, unreachable.getLoc(), unreachable.getSpanAttr());
             hasTypedTerminator = true;
           } else if (auto call = dyn_cast<rust::mir::CallOp>(mirOp)) {
             if (failed(lowerCall(call, builder, slots)))

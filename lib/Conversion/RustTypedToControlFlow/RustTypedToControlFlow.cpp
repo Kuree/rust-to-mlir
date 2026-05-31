@@ -18,12 +18,12 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
 #include <cstdint>
-#include <limits>
 
 namespace mlir {
 #define GEN_PASS_DEF_CONVERTRUSTTYPEDTOCONTROLFLOWPASS
@@ -46,17 +46,25 @@ bool isDefaultTargetName(StringRef name) {
   return name == "default" || name == "otherwise";
 }
 
-std::optional<int32_t> parseSwitchCaseName(StringRef name) {
+std::optional<llvm::APInt> parseSwitchCaseName(StringRef name,
+                                               unsigned bitWidth) {
   if (!name.consume_front("case_"))
     name.consume_front("case");
 
-  int64_t value = 0;
+  if (name.empty())
+    return std::nullopt;
+
+  if (name.starts_with("-")) {
+    int64_t value = 0;
+    if (name.getAsInteger(10, value))
+      return std::nullopt;
+    return llvm::APInt(bitWidth, static_cast<uint64_t>(value), true);
+  }
+
+  uint64_t value = 0;
   if (name.getAsInteger(10, value))
     return std::nullopt;
-  if (value < std::numeric_limits<int32_t>::min() ||
-      value > std::numeric_limits<int32_t>::max())
-    return std::nullopt;
-  return static_cast<int32_t>(value);
+  return llvm::APInt(bitWidth, value);
 }
 
 SmallVector<rust::mir::TypedBlockOp>
@@ -165,8 +173,7 @@ inferNestedReturnTypes(ArrayRef<rust::mir::TypedBlockOp> typedBlocks,
 
 Operation *findTypedTerminator(Block &block) {
   for (Operation &op : block) {
-    if (isa<rust::mir::TypedGotoOp, rust::mir::TypedReturnOp,
-            rust::mir::TypedSwitchIntOp>(op))
+    if (op.hasTrait<OpTrait::IsTerminator>())
       return &op;
   }
   return nullptr;
@@ -192,6 +199,11 @@ lowerTypedTerminator(Operation *op,
       return op->emitError(
           "expected rust.typed.goto to reference a known block");
     rewriter.replaceOpWithNewOp<cf::BranchOp>(gotoOp, blockIt->second);
+    return success();
+  }
+
+  if (auto unreachable = dyn_cast<rust::mir::TypedUnreachableOp>(op)) {
+    rewriter.replaceOpWithNewOp<LLVM::UnreachableOp>(unreachable);
     return success();
   }
 
@@ -221,13 +233,19 @@ lowerTypedTerminator(Operation *op,
       return op->emitError(
           "expected rust.typed.switch_int default target block");
 
-    SmallVector<std::pair<int32_t, Block *>> cases;
+    auto switchType = dyn_cast<IntegerType>(switchOp.getDiscr().getType());
+    if (!switchType)
+      return op->emitError("expected rust.typed.switch_int discriminator to "
+                           "have a builtin integer type");
+
+    SmallVector<std::pair<llvm::APInt, Block *>> cases;
     for (NamedAttribute attr : targets) {
       StringRef name = attr.getName().getValue();
       if (isDefaultTargetName(name))
         continue;
 
-      std::optional<int32_t> value = parseSwitchCaseName(name);
+      std::optional<llvm::APInt> value =
+          parseSwitchCaseName(name, switchType.getWidth());
       auto target = dyn_cast<IntegerAttr>(attr.getValue());
       if (!value || !target)
         return op->emitError(
@@ -242,7 +260,7 @@ lowerTypedTerminator(Operation *op,
     }
 
     llvm::sort(cases, [](const auto &lhs, const auto &rhs) {
-      return lhs.first < rhs.first;
+      return lhs.first.ult(rhs.first);
     });
 
     if (cases.empty()) {
@@ -251,7 +269,7 @@ lowerTypedTerminator(Operation *op,
       return success();
     }
 
-    SmallVector<int32_t> caseValues;
+    SmallVector<llvm::APInt> caseValues;
     SmallVector<Block *> caseDestinations;
     SmallVector<ValueRange> caseOperands;
     caseValues.reserve(cases.size());
@@ -399,6 +417,7 @@ struct ConvertRustTypedToControlFlowPass
                            LLVM::LLVMDialect, rust::mir::RustMIRDialect>();
     target.addIllegalOp<rust::mir::TypedBlockOp, rust::mir::TypedGotoOp,
                         rust::mir::TypedReturnOp, rust::mir::TypedSwitchIntOp,
+                        rust::mir::TypedUnreachableOp,
                         rust::mir::TypedAssertOp, rust::mir::TypedCallOp>();
     target.markUnknownOpDynamicallyLegal([](Operation *) { return true; });
 

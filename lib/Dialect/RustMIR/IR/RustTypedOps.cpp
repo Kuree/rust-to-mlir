@@ -81,10 +81,39 @@ bool isDestructurableAggregate(Type type) {
   return destructurable && destructurable.getSubelementIndexMap().has_value();
 }
 
-Type getIndexedElementType(Type aggregateType, Attribute index) {
+Type getIndexedElementType(Type aggregateType, Attribute index,
+                           IntegerAttr variantIndex) {
   std::optional<int64_t> constantIndex = getConstantIndex(index);
   if (!constantIndex)
     return {};
+
+  if (variantIndex) {
+    std::optional<int64_t> variant = getConstantIndex(variantIndex);
+    if (!variant || *variant < 0)
+      return {};
+    if (auto adtType = dyn_cast<AdtType>(aggregateType)) {
+      ArrayRef<Type> variants = adtType.getVariants();
+      if (static_cast<size_t>(*variant) >= variants.size())
+        return {};
+      auto tupleType = dyn_cast<TypedTupleType>(variants[*variant]);
+      if (!tupleType)
+        return {};
+      return tupleType.getTypeAtIndex(index);
+    }
+    if (auto structType = dyn_cast<LLVM::LLVMStructType>(aggregateType)) {
+      int64_t payloadIndex = *variant + 1;
+      if (payloadIndex < 0 ||
+          static_cast<size_t>(payloadIndex) >= structType.getBody().size())
+        return {};
+      auto payloadType =
+          dyn_cast<LLVM::LLVMStructType>(structType.getBody()[payloadIndex]);
+      if (!payloadType || *constantIndex < 0 ||
+          static_cast<size_t>(*constantIndex) >= payloadType.getBody().size())
+        return {};
+      return payloadType.getBody()[*constantIndex];
+    }
+    return {};
+  }
 
   if (auto destructurable =
           dyn_cast<DestructurableTypeInterface>(aggregateType)) {
@@ -241,7 +270,8 @@ LogicalResult FieldAddrOp::verify() {
                        "address");
 
   TypedAddrType resultType = getAddress().getType();
-  Type fieldType = getIndexedElementType(baseElementType, getIndexAttr());
+  Type fieldType = getIndexedElementType(baseElementType, getIndexAttr(),
+                                         getVariantIndexAttr());
   if (!fieldType)
     return emitOpError("base element type has no field at index ")
            << getIndex();
@@ -530,7 +560,9 @@ DeletionKind LoadOp::rewire(const DestructurableMemorySlot &slot,
 
   Value aggregate = mlir::rust::createOp<MakeAggregateOp>(builder, getLoc(),
                                                           getValue().getType(),
-                                                          values, StringAttr())
+                                                          values, IntegerAttr(),
+                                                          StringAttr(),
+                                                          StringAttr())
                         .getResult();
   getValue().replaceAllUsesWith(aggregate);
   return DeletionKind::Delete;
@@ -582,7 +614,7 @@ DeletionKind StoreOp::rewire(const DestructurableMemorySlot &slot,
     MemorySlot subslot = subslots.lookup(index);
     Value field = mlir::rust::createOp<FieldOp>(
                       builder, getLoc(), subslot.elemType, getValue(),
-                      cast<IntegerAttr>(index).getInt(), StringAttr())
+                      cast<IntegerAttr>(index), IntegerAttr(), StringAttr())
                       .getResult();
     createTypedStore(getLoc(), builder, field, subslot);
   }

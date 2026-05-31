@@ -167,6 +167,8 @@ def RustTyped_NumericCastOp : RustTyped_Op<"numeric_cast"> {
 def RustTyped_MakeAggregateOp : RustTyped_Op<"aggregate"> {
   let summary = "Build a typed Rust aggregate";
   let arguments = (ins Variadic<AnyType>:$values,
+                       OptionalAttr<I64Attr>:$variant_index,
+                       OptionalAttr<StrAttr>:$discriminant,
                        OptionalAttr<StrAttr>:$span);
   let results = (outs AnyType:$result);
   let assemblyFormat = "$values attr-dict `:` type($values) `->` type($result)";
@@ -175,6 +177,7 @@ def RustTyped_MakeAggregateOp : RustTyped_Op<"aggregate"> {
 def RustTyped_FieldOp : RustTyped_Op<"field"> {
   let summary = "Extract a typed Rust indexed aggregate element";
   let arguments = (ins AnyType:$aggregate, I64Attr:$index,
+                       OptionalAttr<I64Attr>:$variant_index,
                        OptionalAttr<StrAttr>:$span);
   let results = (outs AnyType:$result);
   let assemblyFormat = "$aggregate attr-dict `:` type($aggregate) `->` type($result)";
@@ -183,10 +186,19 @@ def RustTyped_FieldOp : RustTyped_Op<"field"> {
 def RustTyped_FieldAddrOp : RustTyped_Op<"field_addr"> {
   let summary = "Compute the address of a typed Rust indexed aggregate element";
   let arguments = (ins AnyType:$base, I64Attr:$index,
+                       OptionalAttr<I64Attr>:$variant_index,
                        OptionalAttr<StrAttr>:$span);
   let results = (outs RustTyped_AddrType:$address);
   let assemblyFormat = "$base attr-dict `:` type($base) `->` type($address)";
   let hasVerifier = 1;
+}
+
+def RustTyped_TypedDiscriminantOp : RustTyped_Op<"discriminant"> {
+  let summary = "Read a typed Rust enum discriminant";
+  let arguments = (ins AnyType:$aggregate,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$aggregate attr-dict `:` type($aggregate) `->` type($result)";
 }
 
 def RustTyped_IndexAddrOp : RustTyped_Op<"index_addr"> {
@@ -262,13 +274,13 @@ def RustTyped_RawAddressOp : RustTyped_Op<"address_of"> {
   let hasVerifier = 1;
 }
 
-def RustTyped_TypedGotoOp : RustTyped_Op<"goto"> {
+def RustTyped_TypedGotoOp : RustTyped_Op<"goto", [Terminator]> {
   let summary = "Typed Rust MIR goto terminator placeholder";
   let arguments = (ins I64Attr:$target, OptionalAttr<StrAttr>:$span);
   let assemblyFormat = "attr-dict";
 }
 
-def RustTyped_TypedSwitchIntOp : RustTyped_Op<"switch_int"> {
+def RustTyped_TypedSwitchIntOp : RustTyped_Op<"switch_int", [Terminator]> {
   let summary = "Typed Rust MIR switch-int terminator placeholder";
   let arguments = (ins AnyType:$discr, OptionalAttr<DictionaryAttr>:$targets,
                        OptionalAttr<StrAttr>:$span);
@@ -305,10 +317,16 @@ def RustTyped_TypedCallOp : RustTyped_Op<"call"> {
   }];
 }
 
-def RustTyped_TypedReturnOp : RustTyped_Op<"return"> {
+def RustTyped_TypedReturnOp : RustTyped_Op<"return", [Terminator]> {
   let summary = "Typed Rust MIR return";
   let arguments = (ins Variadic<AnyType>:$values, OptionalAttr<StrAttr>:$span);
   let assemblyFormat = "attr-dict ($values^ `:` type($values))?";
+}
+
+def RustTyped_TypedUnreachableOp : RustTyped_Op<"unreachable", [Terminator]> {
+  let summary = "Typed Rust MIR unreachable terminator placeholder";
+  let arguments = (ins OptionalAttr<StrAttr>:$span);
+  let assemblyFormat = "attr-dict";
 }
 
 #endif // MLIR_DIALECT_RUST_TYPED_IR_RUSTTYPEDOPS_TD

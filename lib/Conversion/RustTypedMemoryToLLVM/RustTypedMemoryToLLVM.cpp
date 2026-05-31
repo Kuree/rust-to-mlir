@@ -34,10 +34,21 @@ using namespace mlir;
 namespace rustmir = mlir::rust::mir;
 
 namespace {
+unsigned getPointerWidth(ModuleOp module) {
+  if (auto attr =
+          module->getAttrOfType<IntegerAttr>("rust.mir.target_pointer_width")) {
+    int64_t width = attr.getInt();
+    if (width > 0)
+      return static_cast<unsigned>(width);
+  }
+  return 64;
+}
+
 class RustTypedMemoryTypeConverter : public TypeConverter {
 public:
-  explicit RustTypedMemoryTypeConverter(MLIRContext *context)
-      : context(context) {
+  explicit RustTypedMemoryTypeConverter(MLIRContext *context,
+                                        unsigned pointerWidth)
+      : context(context), pointerWidth(pointerWidth) {
     addConversion([](Type type) { return type; });
     addConversion([this](rustmir::SlotType) -> Type {
       return LLVM::LLVMPointerType::get(this->context);
@@ -51,6 +62,12 @@ public:
       if (type.getBitWidth() == 64)
         return Float64Type::get(this->context);
       return Type();
+    });
+    addConversion([this](rustmir::UnitType) -> Type {
+      return LLVM::LLVMStructType::getLiteral(this->context, {});
+    });
+    addConversion([this](rustmir::NeverType) -> Type {
+      return LLVM::LLVMStructType::getLiteral(this->context, {});
     });
     addConversion([this](rustmir::TypedRefType type) -> Type {
       if (isa<rustmir::TypedSliceType>(type.getPointeeType()))
@@ -81,12 +98,7 @@ public:
                                       type.getLength());
     });
     addConversion([this](rustmir::AdtType type) -> Type {
-      // A single-variant ADT lowers to its variant tuple's LLVM struct. Enums
-      // (multiple variants) need a tagged-union layout and are not yet lowered.
-      ArrayRef<Type> variants = type.getVariants();
-      if (variants.size() != 1)
-        return Type();
-      return convertType(variants.front());
+      return convertAdtType(type);
     });
   }
 
@@ -97,7 +109,27 @@ public:
   }
 
 private:
+  Type convertAdtType(rustmir::AdtType type) {
+    ArrayRef<Type> variants = type.getVariants();
+    if (variants.empty())
+      return Type();
+    if (variants.size() == 1)
+      return convertType(variants.front());
+
+    SmallVector<Type> elementTypes;
+    elementTypes.reserve(variants.size() + 1);
+    elementTypes.push_back(IntegerType::get(this->context, pointerWidth));
+    for (Type variant : variants) {
+      Type converted = convertType(variant);
+      if (!converted || !isa<LLVM::LLVMStructType>(converted))
+        return Type();
+      elementTypes.push_back(converted);
+    }
+    return LLVM::LLVMStructType::getLiteral(this->context, elementTypes);
+  }
+
   MLIRContext *context;
+  unsigned pointerWidth;
 };
 
 bool needsTypeConversion(Type type, const TypeConverter &converter) {
@@ -352,8 +384,18 @@ struct FieldAddrOpConversion
     if (fieldIndex < 0 || fieldIndex > std::numeric_limits<int32_t>::max())
       return op.emitError("field index cannot be represented as a GEP index");
 
-    SmallVector<LLVM::GEPArg> indices = {
-        LLVM::GEPArg(0), LLVM::GEPArg(static_cast<int32_t>(fieldIndex))};
+    SmallVector<LLVM::GEPArg> indices;
+    indices.push_back(LLVM::GEPArg(0));
+    if (IntegerAttr variantIndexAttr = op.getVariantIndexAttr()) {
+      int64_t variantIndex = variantIndexAttr.getInt();
+      int64_t payloadIndex = variantIndex + 1;
+      if (variantIndex < 0 || payloadIndex < 0 ||
+          payloadIndex > std::numeric_limits<int32_t>::max())
+        return op.emitError("variant index cannot be represented as a GEP "
+                            "index");
+      indices.push_back(LLVM::GEPArg(static_cast<int32_t>(payloadIndex)));
+    }
+    indices.push_back(LLVM::GEPArg(static_cast<int32_t>(fieldIndex)));
     Value gep = mlir::rust::createOp<LLVM::GEPOp>(
                     rewriter, op.getLoc(), resultType, convertedBaseElementType,
                     adaptor.getBase(), indices)
@@ -653,7 +695,7 @@ struct ConvertRustTypedMemoryToLLVMPass
   void runOnOperation() final {
     ModuleOp module = getOperation();
     MLIRContext *context = module.getContext();
-    RustTypedMemoryTypeConverter typeConverter(context);
+    RustTypedMemoryTypeConverter typeConverter(context, getPointerWidth(module));
 
     foldStringLiteralCalls(module);
 

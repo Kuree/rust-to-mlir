@@ -525,6 +525,16 @@ MlirOperation rustMirProjectionSubsliceCreate(MlirLocation location,
   return createOperation(state);
 }
 
+MlirOperation rustMirProjectionDowncastCreate(MlirLocation location,
+                                              int64_t variantIndex) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.projection_downcast");
+  state.addAttribute("variant_index", builder.getI64IntegerAttr(variantIndex));
+  state.addAttribute("mir_kind", builder.getStringAttr("Downcast"));
+  return createOperation(state);
+}
+
 MlirOperation rustMirPlaceCreate(MlirLocation location, int64_t local,
                                  intptr_t numProjections,
                                  MlirOperation const *projections) {
@@ -647,14 +657,22 @@ MlirOperation rustMirRvalueCastCreate(MlirLocation location,
 MlirOperation rustMirRvalueAggregateCreate(MlirLocation location,
                                            MlirStringRef kind,
                                            MlirStringRef aggregateKind,
+                                           int64_t variantIndex,
+                                           MlirStringRef discriminant,
                                            intptr_t numOperands,
                                            MlirOperation const *operands) {
   MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
   OperationState state(unwrap(location), "rust.mir.aggregate");
   addStringAttr(context, state, "mir_kind", kind);
   addEnumAttr<rustmir::RustAggregateKind, rustmir::RustAggregateKindAttr>(
       context, state, "aggregate_kind", aggregateKind,
       rustmir::symbolizeRustAggregateKind);
+  if (variantIndex >= 0)
+    state.addAttribute("variant_index",
+                       builder.getI64IntegerAttr(variantIndex));
+  if (discriminant.length > 0)
+    addStringAttr(context, state, "discriminant", discriminant);
   MlirOperation wrapped = createRegionOperation(state);
   appendOwnedChildren(unwrap(wrapped), numOperands, operands);
   return wrapped;
@@ -677,6 +695,17 @@ MlirOperation rustMirRvalueLenCreate(MlirLocation location,
   Builder builder(context);
   OperationState state(unwrap(location), "rust.mir.len");
   state.addAttribute("mir_kind", builder.getStringAttr("Len"));
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), place);
+  return wrapped;
+}
+
+MlirOperation rustMirRvalueDiscriminantCreate(MlirLocation location,
+                                              MlirOperation place) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.discriminant");
+  state.addAttribute("mir_kind", builder.getStringAttr("Discriminant"));
   MlirOperation wrapped = createRegionOperation(state);
   appendOwnedChild(unwrap(wrapped), place);
   return wrapped;

@@ -62,6 +62,13 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<index = 32 : i32, "dlti.endianne
     rust.typed.return %field : !rust.mir.bool
   }
 
+  rust.typed.func @aggregate_integer_casts {
+    %narrow_signed = rust.typed.const {debug = "-3"} : !rust.mir.int<"i32">
+    %wide_unsigned = rust.typed.const {debug = "4294967298"} : !rust.mir.int<"u64">
+    %tuple = rust.typed.aggregate %narrow_signed, %wide_unsigned : !rust.mir.int<"i32">, !rust.mir.int<"u64"> -> !rust.typed.tuple<!rust.mir.int<"i64">, !rust.mir.int<"u32">>
+    rust.typed.return %tuple : !rust.typed.tuple<!rust.mir.int<"i64">, !rust.mir.int<"u32">>
+  }
+
   rust.typed.func @locations {
     %lhs = rust.typed.const {debug = "1"} : !rust.mir.int<"i32"> loc("arith.rs":1:1)
     %rhs = rust.typed.const {debug = "2"} : !rust.mir.int<"i32"> loc("arith.rs":1:5)
@@ -151,6 +158,14 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<index = 32 : i32, "dlti.endianne
 // CHECK: rust.typed.return %[[FIELD]] : i1
 // CHECK-NOT: rust.typed.aggregate
 // CHECK-NOT: rust.typed.field
+
+// CHECK-LABEL: rust.typed.func @aggregate_integer_casts
+// CHECK: %[[NARROW:.*]] = arith.constant -3 : i32
+// CHECK: %[[WIDE:.*]] = arith.constant 4294967298 : i64
+// CHECK: %[[EXT:.*]] = arith.extsi %[[NARROW]] : i32 to i64
+// CHECK: llvm.insertvalue %[[EXT]]
+// CHECK: %[[TRUNC:.*]] = arith.trunci %[[WIDE]] : i64 to i32
+// CHECK: llvm.insertvalue %[[TRUNC]]
 
 // LOC-LABEL: rust.typed.func @locations
 // LOC: arith.addi {{.*}} loc(#loc[[ARITH_LOC:[0-9]+]])

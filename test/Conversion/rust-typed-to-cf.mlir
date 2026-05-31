@@ -45,6 +45,12 @@ module {
       rust.typed.return
     }
   }
+
+  rust.typed.func @unreachable_branch {
+    rust.typed.block 0 {
+      rust.typed.unreachable
+    }
+  }
 }
 
 // CHECK-LABEL: func.func @branch() -> !rust.mir.int<"i32">
@@ -77,3 +83,9 @@ module {
 // CHECK: cf.assert %[[ASSERT_COND]], "ok"
 // CHECK: cf.br
 // CHECK-NOT: rust.typed.assert
+
+// CHECK-LABEL: func.func @unreachable_branch()
+// CHECK: cf.br ^bb1
+// CHECK: ^bb1:
+// CHECK: llvm.unreachable
+// CHECK-NOT: rust.typed.unreachable
