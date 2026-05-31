@@ -6,9 +6,13 @@ add_mlir_library(RustToMLIRRustMIRTransforms
 
   DEPENDS
   RustToMLIRRustMIRTransformsPassIncGen
-
-  LINK_LIBS PUBLIC
+)
+target_link_libraries(RustToMLIRRustMIRTransforms
+  PUBLIC
   RustToMLIRRustMIRDialect
+)
+mlir_target_link_libraries(RustToMLIRRustMIRTransforms
+  PUBLIC
   MLIRIR
   MLIRPass
   MLIRSupport

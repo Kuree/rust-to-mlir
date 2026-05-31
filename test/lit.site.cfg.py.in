@@ -5,6 +5,7 @@ config.rust_to_mlir_obj_root = "@RUST_TO_MLIR_BINARY_DIR@"
 config.rust_to_mlir_src_root = "@RUST_TO_MLIR_SOURCE_DIR@"
 config.rust_to_mlir_cargo_executable = "@RUST_TO_MLIR_CARGO_SUBSTITUTION@"
 config.rust_to_mlir_rustc_executable = "@RUST_TO_MLIR_RUSTC_SUBSTITUTION@"
+config.rust_to_mlir_rust_target_libdir = "@RUST_TO_MLIR_RUST_TARGET_LIBDIR@"
 config.llvm_shlib_ext = "@SHLIBEXT@"
 
 import lit.llvm

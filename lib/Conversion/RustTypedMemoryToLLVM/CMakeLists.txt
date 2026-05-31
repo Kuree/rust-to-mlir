@@ -3,9 +3,13 @@ add_mlir_conversion_library(RustToMLIRRustTypedMemoryToLLVM
 
   DEPENDS
   RustToMLIRRustTypedMemoryToLLVMPassIncGen
-
-  LINK_LIBS PUBLIC
+)
+target_link_libraries(RustToMLIRRustTypedMemoryToLLVM
+  PUBLIC
   RustToMLIRRustMIRDialect
+)
+mlir_target_link_libraries(RustToMLIRRustTypedMemoryToLLVM
+  PUBLIC
   MLIRFuncDialect
   MLIRFuncTransforms
   MLIRIR

@@ -10,13 +10,18 @@ permissions:
 
 jobs:
   lit:
-    name: Lit tests
+    name: Lit tests (LLVM ${{ matrix.llvm-version }})
     runs-on: ubuntu-24.04
 
+    strategy:
+      fail-fast: false
+      matrix:
+        llvm-version: ["20", "21", "22"]
+
     env:
-      LLVM_VERSION: "20"
-      LLVM_ROOT: /usr/lib/llvm-20
-      RUSTUP_TOOLCHAIN: stable
+      LLVM_VERSION: ${{ matrix.llvm-version }}
+      LLVM_ROOT: /usr/lib/llvm-${{ matrix.llvm-version }}
+      RUSTUP_TOOLCHAIN: "1.96.0"
       CARGO_TERM_COLOR: always
 
     steps:
@@ -60,12 +65,15 @@ jobs:
         run: |
           rustup toolchain install "${RUSTUP_TOOLCHAIN}" \
             --profile minimal \
+            --component cargo \
             --component llvm-tools-preview \
             --component rust-src \
             --component rustc-dev
           rustup show active-toolchain
           cargo --version
           rustc --version
+          echo "RUST_TO_MLIR_CARGO_EXECUTABLE=$(rustup which cargo)" >> "${GITHUB_ENV}"
+          echo "RUST_TO_MLIR_RUSTC_EXECUTABLE=$(rustup which rustc)" >> "${GITHUB_ENV}"
 
       - name: Configure
         run: |
@@ -76,6 +84,8 @@ jobs:
             -DMLIR_DIR=${LLVM_ROOT}/lib/cmake/mlir \
             -DLLVM_DIR=${LLVM_ROOT}/lib/cmake/llvm \
             -DLLVM_EXTERNAL_LIT=${LLVM_EXTERNAL_LIT} \
+            -DRUST_TO_MLIR_CARGO_EXECUTABLE=${RUST_TO_MLIR_CARGO_EXECUTABLE} \
+            -DRUST_TO_MLIR_RUSTC_EXECUTABLE=${RUST_TO_MLIR_RUSTC_EXECUTABLE} \
             -DRUST_TO_MLIR_PYTHON_EXECUTABLE=${GITHUB_WORKSPACE}/.venv/bin/python
 
       - name: Build
@@ -90,6 +100,6 @@ jobs:
       - name: Upload wheel
         uses: actions/upload-artifact@v4
         with:
-          name: rust-to-mlir-wheel
+          name: rust-to-mlir-wheel-llvm${{ matrix.llvm-version }}
           path: dist/*.whl
           if-no-files-found: error

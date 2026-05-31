@@ -715,13 +715,8 @@ struct FuncCallIndirectConversion
   LogicalResult
   matchAndRewrite(func::CallIndirectOp op, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    SmallVector<Type> resultTypes;
-    if (failed(
-            getTypeConverter()->convertTypes(op.getResultTypes(), resultTypes)))
-      return failure();
-
     auto converted = mlir::rust::createOp<func::CallIndirectOp>(
-        rewriter, op.getLoc(), resultTypes, adaptor.getCallee(),
+        rewriter, op.getLoc(), adaptor.getCallee(),
         adaptor.getCalleeOperands());
     for (NamedAttribute attr : op->getAttrs())
       converted->setAttr(attr.getName(), attr.getValue());

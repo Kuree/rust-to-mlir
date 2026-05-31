@@ -43,7 +43,7 @@ void rust_to_mlir::registerRustToMLIRPasses() {
   registerConvertFuncToLLVMPass();
   registerConvertIndexToLLVMPass();
   registerConvertMathToLLVMPass();
-  registerReconcileUnrealizedCasts();
+  registerReconcileUnrealizedCastsPass();
   registerUBToLLVMConversionPass();
   registerConvertRustTypedToArithPass();
   registerConvertRustTypedToControlFlowPass();

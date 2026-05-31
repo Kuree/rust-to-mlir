@@ -12,8 +12,10 @@ add_mlir_dialect_library(RustToMLIRRustMIRDialect
   MLIRRustAttrsIncGen
   MLIRRustMIROpsIncGen
   MLIRRustTypedOpsIncGen
+)
 
-  LINK_LIBS PUBLIC
+mlir_target_link_libraries(RustToMLIRRustMIRDialect
+  PUBLIC
   MLIRIR
   MLIRLLVMDialect
   MLIRMemorySlotInterfaces

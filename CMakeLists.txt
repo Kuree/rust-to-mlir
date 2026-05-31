@@ -10,9 +10,10 @@ set(CMAKE_BUILD_WITH_INSTALL_NAME_DIR ON)
 find_package(MLIR REQUIRED CONFIG)
 
 if(NOT LLVM_PACKAGE_VERSION VERSION_GREATER_EQUAL "20" OR
-   NOT LLVM_PACKAGE_VERSION VERSION_LESS "21")
+   NOT LLVM_PACKAGE_VERSION VERSION_LESS "23")
   message(FATAL_ERROR
-    "RustToMLIR requires LLVM/MLIR 20.x; found LLVM ${LLVM_PACKAGE_VERSION}")
+    "RustToMLIR requires LLVM/MLIR 20.x through 22.x; "
+    "found LLVM ${LLVM_PACKAGE_VERSION}")
 endif()
 
 message(STATUS "Using MLIRConfig.cmake in: ${MLIR_DIR}")
@@ -30,6 +31,44 @@ include(TableGen)
 include(AddLLVM)
 include(AddMLIR)
 include(HandleLLVMOptions)
+
+if(TARGET MLIR)
+  set(MLIR_LINK_MLIR_DYLIB ON CACHE BOOL
+    "Link against libMLIR instead of MLIR component archives" FORCE)
+endif()
+
+if(LLVM_LINK_LLVM_DYLIB)
+  set(RUST_TO_MLIR_NATIVE_TARGET_LIBS)
+else()
+  llvm_map_components_to_libnames(RUST_TO_MLIR_NATIVE_TARGET_LIBS
+    native
+    asmparser
+    asmprinter
+  )
+endif()
+
+if(TARGET LLVMSupport AND TARGET zstd::libzstd_static AND
+   TARGET zstd::libzstd_shared)
+  # Official LLVM binary archives may export static zstd through LLVMSupport;
+  # use shared zstd so RustToMLIR's shared C API can link on distro systems
+  # where libzstd.a is not built as PIC.
+  get_target_property(RUST_TO_MLIR_LLVM_SUPPORT_LINK_LIBS LLVMSupport
+    INTERFACE_LINK_LIBRARIES)
+  if(RUST_TO_MLIR_LLVM_SUPPORT_LINK_LIBS)
+    set(RUST_TO_MLIR_REWRITTEN_LLVM_SUPPORT_LINK_LIBS)
+    foreach(LIB ${RUST_TO_MLIR_LLVM_SUPPORT_LINK_LIBS})
+      if(LIB STREQUAL "zstd::libzstd_static")
+        list(APPEND RUST_TO_MLIR_REWRITTEN_LLVM_SUPPORT_LINK_LIBS
+          zstd::libzstd_shared)
+      else()
+        list(APPEND RUST_TO_MLIR_REWRITTEN_LLVM_SUPPORT_LINK_LIBS ${LIB})
+      endif()
+    endforeach()
+    set_target_properties(LLVMSupport PROPERTIES
+      INTERFACE_LINK_LIBRARIES
+      "${RUST_TO_MLIR_REWRITTEN_LLVM_SUPPORT_LINK_LIBS}")
+  endif()
+endif()
 
 # HandleLLVMOptions enables -Woverloaded-virtual, which GCC reports for MLIR's
 # own OpConversionPattern templates (the inherited RewritePattern::rewrite is

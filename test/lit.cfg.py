@@ -28,13 +28,24 @@ if not loaded_site_config:
     llvm_config.use_default_substitutions()
 
     config.rust_to_mlir_tools_dir = os.path.join(config.rust_to_mlir_obj_root, "bin")
+    rust_target_libdir_arg = shlex.quote(config.rust_to_mlir_rust_target_libdir)
     rust_to_mlir_tools = [
         ToolSubst("rust-opt", FindTool("rust-opt"), unresolved="fatal"),
-        ToolSubst("rust-cpu-runner", FindTool("rust-cpu-runner"), unresolved="fatal"),
-        ToolSubst("rust-run", FindTool("rust-run"), unresolved="fatal"),
+        ToolSubst(
+            "rust-cpu-runner",
+            FindTool("rust-cpu-runner"),
+            unresolved="fatal",
+            extra_args=["--rust-target-libdir", rust_target_libdir_arg],
+        ),
+        ToolSubst(
+            "rust-run",
+            FindTool("rust-run"),
+            unresolved="fatal",
+            extra_args=["--rust-target-libdir", rust_target_libdir_arg],
+        ),
     ]
     llvm_config.add_tool_substitutions(rust_to_mlir_tools, [config.rust_to_mlir_tools_dir])
-    llvm_config.add_tool_substitutions(["FileCheck", "not"], [config.llvm_tools_dir])
+    llvm_config.add_tool_substitutions(["FileCheck", "not", "split-file"], [config.llvm_tools_dir])
 
     rust_mir_extract = os.path.join(config.rust_to_mlir_tools_dir, "rust-mir-extract")
     config.substitutions.append(("%rust_mir_extract", rust_mir_extract))

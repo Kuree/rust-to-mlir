@@ -10,6 +10,10 @@ target_link_libraries(RustToMLIRRustCAPI
   PRIVATE
   RustToMLIRSupport
   RustToMLIRRustMIRDialect
+  ${RUST_TO_MLIR_NATIVE_TARGET_LIBS}
+)
+mlir_target_link_libraries(RustToMLIRRustCAPI
+  PRIVATE
   MLIRBytecodeWriter
   MLIRDLTIDialect
   MLIRExecutionEngine
@@ -17,7 +21,6 @@ target_link_libraries(RustToMLIRRustCAPI
   MLIRParser
   MLIRPass
   MLIRSupport
-  LLVMSupport
 )
 set_target_properties(RustToMLIRRustCAPI PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${LLVM_LIBRARY_OUTPUT_INTDIR}

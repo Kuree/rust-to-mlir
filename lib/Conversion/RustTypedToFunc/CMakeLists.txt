@@ -3,9 +3,13 @@ add_mlir_conversion_library(RustToMLIRRustTypedToFunc
 
   DEPENDS
   RustToMLIRRustTypedToFuncPassIncGen
-
-  LINK_LIBS PUBLIC
+)
+target_link_libraries(RustToMLIRRustTypedToFunc
+  PUBLIC
   RustToMLIRRustMIRDialect
+)
+mlir_target_link_libraries(RustToMLIRRustTypedToFunc
+  PUBLIC
   MLIRFuncDialect
   MLIRIR
   MLIRPass

@@ -8,6 +8,10 @@ llvm_update_compile_flags(rust-cpu-runner)
 target_link_libraries(rust-cpu-runner
   PRIVATE
   RustToMLIRSupport
+  ${RUST_TO_MLIR_NATIVE_TARGET_LIBS}
+)
+mlir_target_link_libraries(rust-cpu-runner
+  PRIVATE
   MLIRExecutionEngine
   MLIRIR
   MLIRParser

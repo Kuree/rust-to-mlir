@@ -420,9 +420,10 @@ struct TypedCallIndirectConversion
   LogicalResult
   matchAndRewrite(rust::mir::TypedCallIndirectOp call, OpAdaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    auto funcCall = rewriter.replaceOpWithNewOp<func::CallIndirectOp>(
-        call, call.getResultTypes(), adaptor.getCallee(), adaptor.getArgs());
+    auto funcCall = mlir::rust::createOp<func::CallIndirectOp>(
+        rewriter, call.getLoc(), adaptor.getCallee(), adaptor.getArgs());
     addRustIndirectCallAttrs(call, funcCall.getOperation());
+    rewriter.replaceOp(call, funcCall->getResults());
     return success();
   }
 };

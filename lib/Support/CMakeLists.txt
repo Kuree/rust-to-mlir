@@ -3,14 +3,20 @@ add_mlir_library(RustToMLIRSupport
 
   ADDITIONAL_HEADER_DIRS
   ${PROJECT_SOURCE_DIR}/include/RustToMLIR/Support
+)
 
-  LINK_LIBS PUBLIC
+target_link_libraries(RustToMLIRSupport
+  PUBLIC
   RustToMLIRRustMIRDialect
   RustToMLIRRustMIRTransforms
   RustToMLIRRustTypedToArith
   RustToMLIRRustTypedToControlFlow
   RustToMLIRRustTypedToFunc
   RustToMLIRRustTypedMemoryToLLVM
+)
+
+mlir_target_link_libraries(RustToMLIRSupport
+  PUBLIC
   MLIRArithDialect
   MLIRArithToLLVM
   MLIRBuiltinToLLVMIRTranslation

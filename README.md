@@ -1,3 +1,6 @@
+> **Warning**
+> This project is completely LLM-generated with human guidance.
+
 # RustToMLIR
 
 RustToMLIR is an out-of-tree MLIR project for importing Rust MIR, as exposed by
@@ -10,17 +13,18 @@ MLIR tests together when moving to a newer Rust compiler.
 
 ## Build
 
-This project targets system LLVM/MLIR 20 and a Rust toolchain with compiler
-development components installed.
+This project targets system LLVM/MLIR 20 through 22 and a Rust toolchain with
+compiler development components installed.
 
 ```sh
 rustup component add rustc-dev llvm-tools-preview rust-src
 ```
 
 ```sh
+LLVM_VERSION=22
 cmake -S . -B build -G Ninja \
-  -DMLIR_DIR=/usr/lib/llvm-20/lib/cmake/mlir \
-  -DLLVM_DIR=/usr/lib/llvm-20/lib/cmake/llvm \
+  -DMLIR_DIR=/usr/lib/llvm-${LLVM_VERSION}/lib/cmake/mlir \
+  -DLLVM_DIR=/usr/lib/llvm-${LLVM_VERSION}/lib/cmake/llvm \
   -DLLVM_EXTERNAL_LIT=${PATH_TO_LIT}
 ninja -C build
 ```
@@ -70,7 +74,7 @@ imported Rust source locations, including start/end ranges when rustc_public
 provides them.
 
 The Rust extractor currently uses `dlopen` to load the project C API library
-and is tested on Linux/glibc with LLVM/MLIR 20.
+and is tested on Linux/glibc with LLVM/MLIR 20 and 22.
 
 ## Execute Rust Source
 

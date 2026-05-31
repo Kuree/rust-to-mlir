@@ -3,9 +3,13 @@ add_mlir_conversion_library(RustToMLIRRustTypedToArith
 
   DEPENDS
   RustToMLIRRustTypedToArithPassIncGen
-
-  LINK_LIBS PUBLIC
+)
+target_link_libraries(RustToMLIRRustTypedToArith
+  PUBLIC
   RustToMLIRRustMIRDialect
+)
+mlir_target_link_libraries(RustToMLIRRustTypedToArith
+  PUBLIC
   MLIRArithDialect
   MLIRControlFlowDialect
   MLIRDataLayoutInterfaces

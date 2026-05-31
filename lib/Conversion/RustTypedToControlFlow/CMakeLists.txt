@@ -3,9 +3,13 @@ add_mlir_conversion_library(RustToMLIRRustTypedToControlFlow
 
   DEPENDS
   RustToMLIRRustTypedToControlFlowPassIncGen
-
-  LINK_LIBS PUBLIC
+)
+target_link_libraries(RustToMLIRRustTypedToControlFlow
+  PUBLIC
   RustToMLIRRustMIRDialect
+)
+mlir_target_link_libraries(RustToMLIRRustTypedToControlFlow
+  PUBLIC
   MLIRControlFlowDialect
   MLIRFuncDialect
   MLIRIR
