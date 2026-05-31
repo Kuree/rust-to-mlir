@@ -96,6 +96,14 @@ public:
       return LLVM::LLVMArrayType::get(this->context, elementType,
                                       type.getLength());
     });
+    addConversion([this](rustmir::AdtType type) -> Type {
+      // A single-variant ADT lowers to its variant tuple's LLVM struct; enums
+      // (multiple variants) are not yet lowered as aggregates.
+      ArrayRef<Type> variants = type.getVariants();
+      if (variants.size() != 1)
+        return Type();
+      return convertType(variants.front());
+    });
     addConversion([this](rustmir::TypedSliceType type) -> Type {
       Type elementType = convertType(type.getElementType());
       if (!elementType)

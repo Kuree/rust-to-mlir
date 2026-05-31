@@ -73,6 +73,14 @@ public:
       return LLVM::LLVMArrayType::get(this->context, elementType,
                                       type.getLength());
     });
+    addConversion([this](rustmir::AdtType type) -> Type {
+      // A single-variant ADT lowers to its variant tuple's LLVM struct. Enums
+      // (multiple variants) need a tagged-union layout and are not yet lowered.
+      ArrayRef<Type> variants = type.getVariants();
+      if (variants.size() != 1)
+        return Type();
+      return convertType(variants.front());
+    });
   }
 
   static Type getFatPointerType(MLIRContext *context) {

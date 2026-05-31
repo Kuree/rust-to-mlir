@@ -8,6 +8,7 @@
 #define MLIR_DIALECT_RUSTMIR_IR_RUSTTYPES_TD
 
 include "mlir/IR/AttrTypeBase.td"
+include "mlir/Interfaces/MemorySlotInterfaces.td"
 include "mlir/Dialect/RustMIR/IR/RustAttrs.td"
 include "mlir/Dialect/RustMIR/IR/RustMIRDialect.td"
 
@@ -94,7 +95,8 @@ def Rust_FnType : Rust_Type<"Fn", "fn"> {
   let assemblyFormat = "`<` $spelling `>`";
 }
 
-def Rust_AdtType : Rust_Type<"Adt", "adt", [MutableType]> {
+def Rust_AdtType : Rust_Type<"Adt", "adt", [MutableType,
+    DeclareTypeInterfaceMethods<DestructurableTypeInterface>]> {
   let summary = "Rust nominal ADT type (struct/enum/union)";
   let description = [{
     Identified nominal type uniqued on a canonical `name` (the def path plus

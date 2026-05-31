@@ -69,6 +69,31 @@ LogicalResult AdtType::setBody(ArrayRef<Type> variants) {
 
 bool AdtType::isInitialized() const { return getImpl()->initialized; }
 
+// A single-variant ADT (struct/union) destructures like its variant tuple so it
+// participates in SROA/mem2reg. Multi-variant enums overlap their variants in
+// memory and are intentionally not destructurable.
+static std::optional<TypedTupleType> getSingleVariantTuple(AdtType type) {
+  ArrayRef<Type> variants = type.getVariants();
+  if (variants.size() != 1)
+    return std::nullopt;
+  if (auto tuple = llvm::dyn_cast<TypedTupleType>(variants.front()))
+    return tuple;
+  return std::nullopt;
+}
+
+std::optional<llvm::DenseMap<Attribute, Type>>
+AdtType::getSubelementIndexMap() const {
+  if (std::optional<TypedTupleType> tuple = getSingleVariantTuple(*this))
+    return tuple->getSubelementIndexMap();
+  return std::nullopt;
+}
+
+Type AdtType::getTypeAtIndex(Attribute index) const {
+  if (std::optional<TypedTupleType> tuple = getSingleVariantTuple(*this))
+    return tuple->getTypeAtIndex(index);
+  return {};
+}
+
 Type AdtType::parse(AsmParser &parser) {
   std::string name;
   if (parser.parseLess() || parser.parseString(&name))
