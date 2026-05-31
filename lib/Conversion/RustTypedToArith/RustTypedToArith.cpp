@@ -47,26 +47,11 @@ unsigned getPointerWidth(ModuleOp module) {
   return 64;
 }
 
-std::optional<unsigned> getFixedIntegerWidth(StringRef spelling,
-                                             unsigned pointerWidth) {
-  if (spelling == "isize" || spelling == "usize")
-    return pointerWidth;
-
-  if (!spelling.consume_front("i") && !spelling.consume_front("u"))
-    return std::nullopt;
-
-  unsigned width = 0;
-  if (spelling.getAsInteger(10, width) || width == 0)
-    return std::nullopt;
-  return width;
-}
-
 bool isSignedRustInteger(Type type) {
-  auto intType = dyn_cast<rustmir::IntType>(type);
-  if (!intType)
-    return true;
-  StringRef spelling = intType.getSpelling();
-  return spelling == "isize" || spelling.starts_with("i");
+  if (auto intType = dyn_cast<rustmir::IntType>(type))
+    return intType.getIsSigned();
+  // Bool (i1) and other non-integers use unsigned semantics.
+  return false;
 }
 
 class RustScalarTypeConverter : public TypeConverter {
@@ -78,11 +63,8 @@ public:
       return IntegerType::get(this->context, 1);
     });
     addConversion([this](rustmir::IntType type) -> Type {
-      std::optional<unsigned> width =
-          getFixedIntegerWidth(type.getSpelling(), this->pointerWidth);
-      if (!width)
-        return Type();
-      return IntegerType::get(this->context, *width);
+      return IntegerType::get(this->context,
+                              type.getBitWidth(this->pointerWidth));
     });
     addConversion([this](rustmir::SlotType type) -> Type {
       Type elementType = convertType(type.getElementType());

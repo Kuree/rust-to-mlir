@@ -81,29 +81,29 @@ Type typeFromRustDebug(MLIRContext *context, StringRef spelling) {
   if (s.contains("RigidTy(Bool)"))
     return rust::mir::BoolType::get(context);
   if (s.contains("RigidTy(Int(I8))"))
-    return rust::mir::IntType::get(context, "i8");
+    return rust::mir::IntType::getFromSpelling(context, "i8");
   if (s.contains("RigidTy(Int(I16))"))
-    return rust::mir::IntType::get(context, "i16");
+    return rust::mir::IntType::getFromSpelling(context, "i16");
   if (s.contains("RigidTy(Int(I32))"))
-    return rust::mir::IntType::get(context, "i32");
+    return rust::mir::IntType::getFromSpelling(context, "i32");
   if (s.contains("RigidTy(Int(I64))"))
-    return rust::mir::IntType::get(context, "i64");
+    return rust::mir::IntType::getFromSpelling(context, "i64");
   if (s.contains("RigidTy(Int(I128))"))
-    return rust::mir::IntType::get(context, "i128");
+    return rust::mir::IntType::getFromSpelling(context, "i128");
   if (s.contains("RigidTy(Int(Isize))"))
-    return rust::mir::IntType::get(context, "isize");
+    return rust::mir::IntType::getFromSpelling(context, "isize");
   if (s.contains("RigidTy(Uint(U8))"))
-    return rust::mir::IntType::get(context, "u8");
+    return rust::mir::IntType::getFromSpelling(context, "u8");
   if (s.contains("RigidTy(Uint(U16))"))
-    return rust::mir::IntType::get(context, "u16");
+    return rust::mir::IntType::getFromSpelling(context, "u16");
   if (s.contains("RigidTy(Uint(U32))"))
-    return rust::mir::IntType::get(context, "u32");
+    return rust::mir::IntType::getFromSpelling(context, "u32");
   if (s.contains("RigidTy(Uint(U64))"))
-    return rust::mir::IntType::get(context, "u64");
+    return rust::mir::IntType::getFromSpelling(context, "u64");
   if (s.contains("RigidTy(Uint(U128))"))
-    return rust::mir::IntType::get(context, "u128");
+    return rust::mir::IntType::getFromSpelling(context, "u128");
   if (s.contains("RigidTy(Uint(Usize))"))
-    return rust::mir::IntType::get(context, "usize");
+    return rust::mir::IntType::getFromSpelling(context, "usize");
   if (s.contains("RigidTy(Ref("))
     return rust::mir::RefType::get(context, s);
   if (s.contains("RigidTy(Slice("))
@@ -113,7 +113,7 @@ Type typeFromRustDebug(MLIRContext *context, StringRef spelling) {
   if (s.contains("std::ops::RangeInclusive") ||
       s.contains("core::ops::RangeInclusive") ||
       s.contains("std::ops::Range\"") || s.contains("core::ops::Range\"")) {
-    Type usizeType = rust::mir::IntType::get(context, "usize");
+    Type usizeType = rust::mir::IntType::getFromSpelling(context, "usize");
     SmallVector<Type, 2> fields = {usizeType, usizeType};
     return rust::mir::TypedTupleType::get(context, ArrayRef<Type>(fields));
   }
@@ -123,7 +123,7 @@ Type typeFromRustDebug(MLIRContext *context, StringRef spelling) {
       s.contains("core::ops::RangeToInclusive") ||
       s.contains("std::ops::RangeTo\"") ||
       s.contains("core::ops::RangeTo\"")) {
-    Type usizeType = rust::mir::IntType::get(context, "usize");
+    Type usizeType = rust::mir::IntType::getFromSpelling(context, "usize");
     SmallVector<Type, 1> fields = {usizeType};
     return rust::mir::TypedTupleType::get(context, ArrayRef<Type>(fields));
   }
@@ -305,12 +305,12 @@ Type getPointeeType(Type pointerType) {
   return {};
 }
 
-StringRef getPointerMutability(Type pointerType) {
+rust::mir::RustMutability getPointerMutability(Type pointerType) {
   if (auto refType = dyn_cast<rust::mir::TypedRefType>(pointerType))
     return refType.getMutability();
   if (auto rawPtrType = dyn_cast<rust::mir::TypedRawPtrType>(pointerType))
     return rawPtrType.getMutability();
-  return "shared";
+  return rust::mir::RustMutability::Shared;
 }
 
 Type getSubsliceType(Type aggregateType, MLIRContext *context) {
@@ -787,7 +787,7 @@ LogicalResult lowerRangeIndexCall(rust::mir::CallOp op, OpBuilder &builder,
                         "receiver element type");
 
   MLIRContext *context = op.getContext();
-  Type indexType = rust::mir::IntType::get(context, "usize");
+  Type indexType = rust::mir::IntType::getFromSpelling(context, "usize");
   Value zero = createTypedIntegerConst(builder, loc, indexType, 0, spanAttr);
   Value one = createTypedIntegerConst(builder, loc, indexType, 1, spanAttr);
   Value sourceLen = mlir::rust::createOp<rust::mir::PtrMetadataOp>(

@@ -12,7 +12,9 @@ use rustc_public::mir::{
     TerminatorKind,
 };
 use rustc_public::target::{Endian, MachineInfo};
-use rustc_public::ty::{Abi, Allocation, ConstantKind, RigidTy, Ty, TyConstKind, TyKind};
+use rustc_public::ty::{
+    Abi, Allocation, ConstantKind, IntTy, RigidTy, Ty, TyConstKind, TyKind, UintTy,
+};
 use rustc_public::CrateItem;
 use std::env;
 use std::ffi::{CStr, CString};
@@ -100,6 +102,11 @@ type RustMlirMergeTextModulesToFile =
 type RustMirModuleSetTarget = unsafe extern "C" fn(MlirModule, i64, MlirStringRef);
 type RustMirTypeFromRustcPublicString =
     unsafe extern "C" fn(MlirContext, MlirStringRef) -> MlirType;
+type RustMirBoolTypeGet = unsafe extern "C" fn(MlirContext) -> MlirType;
+type RustMirCharTypeGet = unsafe extern "C" fn(MlirContext) -> MlirType;
+type RustMirUnitTypeGet = unsafe extern "C" fn(MlirContext) -> MlirType;
+type RustMirNeverTypeGet = unsafe extern "C" fn(MlirContext) -> MlirType;
+type RustMirIntTypeGet = unsafe extern "C" fn(MlirContext, MlirStringRef) -> MlirType;
 type RustTypedTupleTypeGet = unsafe extern "C" fn(MlirContext, isize, *const MlirType) -> MlirType;
 type RustTypedArrayTypeGet = unsafe extern "C" fn(MlirContext, MlirType, u64) -> MlirType;
 type RustTypedSliceTypeGet = unsafe extern "C" fn(MlirContext, MlirType) -> MlirType;
@@ -259,6 +266,11 @@ struct MlirApi {
     merge_text_modules_to_file: RustMlirMergeTextModulesToFile,
     module_set_target: RustMirModuleSetTarget,
     type_from_rustc_public_string: RustMirTypeFromRustcPublicString,
+    mir_bool_type_get: RustMirBoolTypeGet,
+    mir_char_type_get: RustMirCharTypeGet,
+    mir_unit_type_get: RustMirUnitTypeGet,
+    mir_never_type_get: RustMirNeverTypeGet,
+    mir_int_type_get: RustMirIntTypeGet,
     typed_tuple_type_get: RustTypedTupleTypeGet,
     typed_array_type_get: RustTypedArrayTypeGet,
     typed_slice_type_get: RustTypedSliceTypeGet,
@@ -336,6 +348,11 @@ impl MlirApi {
                     handle,
                     "rustMirTypeFromRustcPublicString",
                 )?,
+                mir_bool_type_get: load_symbol(handle, "rustMirBoolTypeGet")?,
+                mir_char_type_get: load_symbol(handle, "rustMirCharTypeGet")?,
+                mir_unit_type_get: load_symbol(handle, "rustMirUnitTypeGet")?,
+                mir_never_type_get: load_symbol(handle, "rustMirNeverTypeGet")?,
+                mir_int_type_get: load_symbol(handle, "rustMirIntTypeGet")?,
                 typed_tuple_type_get: load_symbol(handle, "rustTypedTupleTypeGet")?,
                 typed_array_type_get: load_symbol(handle, "rustTypedArrayTypeGet")?,
                 typed_slice_type_get: load_symbol(handle, "rustTypedSliceTypeGet")?,
@@ -633,6 +650,13 @@ enum MirProjection {
 #[derive(Clone)]
 enum MirType {
     Debug(String),
+    Bool,
+    Char,
+    Unit,
+    Never,
+    /// Carries the canonical Rust spelling (e.g. "i32", "usize"), derived from
+    /// the typed `rustc_public` integer kind rather than its Debug rendering.
+    Int(&'static str),
     Tuple(Vec<MirType>),
     Array {
         element: Box<MirType>,
@@ -665,10 +689,37 @@ fn raw_pointer_mutability(mutability: Mutability) -> &'static str {
     }
 }
 
+fn signed_int_spelling(int_ty: IntTy) -> &'static str {
+    match int_ty {
+        IntTy::Isize => "isize",
+        IntTy::I8 => "i8",
+        IntTy::I16 => "i16",
+        IntTy::I32 => "i32",
+        IntTy::I64 => "i64",
+        IntTy::I128 => "i128",
+    }
+}
+
+fn unsigned_int_spelling(uint_ty: UintTy) -> &'static str {
+    match uint_ty {
+        UintTy::Usize => "usize",
+        UintTy::U8 => "u8",
+        UintTy::U16 => "u16",
+        UintTy::U32 => "u32",
+        UintTy::U64 => "u64",
+        UintTy::U128 => "u128",
+    }
+}
+
 impl MirType {
     fn spelling(&self) -> String {
         match self {
             Self::Debug(spelling) => spelling.clone(),
+            Self::Bool => "bool".to_string(),
+            Self::Char => "char".to_string(),
+            Self::Unit => "()".to_string(),
+            Self::Never => "!".to_string(),
+            Self::Int(spelling) => (*spelling).to_string(),
             Self::Tuple(elements) => {
                 let elements = elements
                     .iter()
@@ -694,9 +745,12 @@ impl MirType {
 
     fn from_public(ty: Ty) -> Self {
         match ty.kind() {
-            TyKind::RigidTy(RigidTy::Tuple(elements)) if elements.is_empty() => {
-                Self::Debug("()".to_string())
-            }
+            TyKind::RigidTy(RigidTy::Bool) => Self::Bool,
+            TyKind::RigidTy(RigidTy::Char) => Self::Char,
+            TyKind::RigidTy(RigidTy::Int(int_ty)) => Self::Int(signed_int_spelling(int_ty)),
+            TyKind::RigidTy(RigidTy::Uint(uint_ty)) => Self::Int(unsigned_int_spelling(uint_ty)),
+            TyKind::RigidTy(RigidTy::Never) => Self::Never,
+            TyKind::RigidTy(RigidTy::Tuple(elements)) if elements.is_empty() => Self::Unit,
             TyKind::RigidTy(RigidTy::Tuple(elements)) => Self::Tuple(
                 elements
                     .iter()
@@ -1513,6 +1567,13 @@ impl MlirEmitter {
     fn type_from_mir(&self, ty: &MirType) -> MlirType {
         match ty {
             MirType::Debug(spelling) => self.type_from_debug(spelling),
+            MirType::Bool => unsafe { (self.api.mir_bool_type_get)(self.context) },
+            MirType::Char => unsafe { (self.api.mir_char_type_get)(self.context) },
+            MirType::Unit => unsafe { (self.api.mir_unit_type_get)(self.context) },
+            MirType::Never => unsafe { (self.api.mir_never_type_get)(self.context) },
+            MirType::Int(spelling) => unsafe {
+                (self.api.mir_int_type_get)(self.context, mlir_string(spelling))
+            },
             MirType::Tuple(elements) => {
                 let element_types = elements
                     .iter()

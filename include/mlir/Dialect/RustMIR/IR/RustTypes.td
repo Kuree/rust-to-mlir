@@ -34,8 +34,28 @@ def Rust_NeverType : Rust_Type<"Never", "never"> {
 
 def Rust_IntType : Rust_Type<"Int", "int"> {
   let summary = "Rust integer type";
-  let parameters = (ins StringRefParameter<"rust integer spelling">:$spelling);
-  let assemblyFormat = "`<` $spelling `>`";
+  // `width` is the fixed bit width (8/16/32/64/128); a width of 0 denotes a
+  // pointer-sized integer (`isize`/`usize`). Signedness is carried explicitly
+  // so downstream logic never has to inspect the spelling string.
+  let parameters = (ins "unsigned":$width, "bool":$isSigned);
+  let hasCustomAssemblyFormat = 1;
+  let extraClassDeclaration = [{
+    /// True for the pointer-sized integers `isize`/`usize`.
+    bool isPointerSized() const { return getWidth() == 0; }
+
+    /// Canonical Rust spelling, e.g. "i32", "u8", "isize".
+    std::string getSpelling() const;
+
+    /// Concrete bit width, resolving `isize`/`usize` via \p pointerWidth.
+    unsigned getBitWidth(unsigned pointerWidth) const {
+      return isPointerSized() ? pointerWidth : getWidth();
+    }
+
+    /// Build from a canonical Rust spelling (e.g. "i32", "usize"). Returns a
+    /// null type if \p spelling is not a recognised Rust integer.
+    static IntType getFromSpelling(::mlir::MLIRContext *context,
+                                   ::llvm::StringRef spelling);
+  }];
 }
 
 def Rust_TupleType : Rust_Type<"Tuple", "tuple"> {

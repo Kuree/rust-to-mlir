@@ -8,6 +8,7 @@
 #define MLIR_DIALECT_RUST_TYPED_IR_RUSTTYPEDTYPES_TD
 
 include "mlir/IR/AttrTypeBase.td"
+include "mlir/Dialect/RustMIR/IR/RustAttrs.td"
 include "mlir/Dialect/RustTyped/IR/RustTypedDialect.td"
 include "mlir/Interfaces/MemorySlotInterfaces.td"
 
@@ -57,14 +58,14 @@ def RustTyped_SliceType : RustTyped_Type<"TypedSlice", "slice"> {
 
 def RustTyped_RefType : RustTyped_Type<"TypedRef", "ref"> {
   let summary = "Typed Rust reference";
-  let parameters = (ins StringRefParameter<"Rust reference mutability">:$mutability,
+  let parameters = (ins EnumParameter<RustMutability>:$mutability,
                         "Type":$pointeeType);
   let assemblyFormat = "`<` $mutability `,` $pointeeType `>`";
 }
 
 def RustTyped_RawPtrType : RustTyped_Type<"TypedRawPtr", "rawptr"> {
   let summary = "Typed Rust raw pointer";
-  let parameters = (ins StringRefParameter<"Rust raw pointer mutability">:$mutability,
+  let parameters = (ins EnumParameter<RustMutability>:$mutability,
                         "Type":$pointeeType);
   let assemblyFormat = "`<` $mutability `,` $pointeeType `>`";
 }

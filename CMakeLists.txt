@@ -31,6 +31,18 @@ include(AddLLVM)
 include(AddMLIR)
 include(HandleLLVMOptions)
 
+# HandleLLVMOptions enables -Woverloaded-virtual, which GCC reports for MLIR's
+# own OpConversionPattern templates (the inherited RewritePattern::rewrite is
+# "hidden" by the adaptor-based rewrite/matchAndRewrite). The noise comes from
+# MLIR headers instantiated by our conversion passes, not from our code, so
+# silence it where the compiler supports the flag.
+include(CheckCXXCompilerFlag)
+check_cxx_compiler_flag("-Wno-overloaded-virtual"
+  RUST_TO_LLVM_HAS_WNO_OVERLOADED_VIRTUAL)
+if(RUST_TO_LLVM_HAS_WNO_OVERLOADED_VIRTUAL)
+  add_compile_options(-Wno-overloaded-virtual)
+endif()
+
 set(RUST_TO_LLVM_SOURCE_DIR ${PROJECT_SOURCE_DIR})
 set(RUST_TO_LLVM_BINARY_DIR ${PROJECT_BINARY_DIR})
 

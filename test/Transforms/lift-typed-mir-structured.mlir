@@ -63,7 +63,7 @@ module {
   rust.mir.func @array_static_index_ref attributes {arg_count = 0 : i64} {
     rust.mir.local {index = 0 : i64, name = "_0", role = #rust.local_role<return>, rust_type = !rust.mir.unit}
     rust.mir.local {index = 1 : i64, name = "_1", rust_type = !rust.typed.array<!rust.mir.int<"i32">, 2>}
-    rust.mir.local {index = 2 : i64, name = "_2", rust_type = !rust.typed.ref<"shared", !rust.mir.int<"i32">>}
+    rust.mir.local {index = 2 : i64, name = "_2", rust_type = !rust.typed.ref<shared, !rust.mir.int<"i32">>}
     rust.mir.block 0 {
       rust.mir.assign 0 {
         rust.mir.place 1 {
@@ -111,5 +111,5 @@ module {
 // CHECK-SAME: index = 1 : i64
 // CHECK: rust.typed.borrow %[[ARRAY_FIELD]]
 // CHECK-SAME: !rust.typed.addr<!rust.mir.int<"i32">>
-// CHECK-SAME: -> !rust.typed.ref<"shared", !rust.mir.int<"i32">>
+// CHECK-SAME: -> !rust.typed.ref<shared, !rust.mir.int<"i32">>
 // CHECK: rust.typed.return

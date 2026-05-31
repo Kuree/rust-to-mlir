@@ -316,7 +316,7 @@ LogicalResult BorrowOp::verify() {
   if (pointeeType != resultType.getPointeeType())
     return emitOpError("operand element type must match reference pointee "
                        "type");
-  if (stringifyRustMutability(getMutability()) != resultType.getMutability())
+  if (getMutability() != resultType.getMutability())
     return emitOpError("mutability attribute must match reference type");
   return success();
 }
@@ -333,7 +333,7 @@ LogicalResult RawAddressOp::verify() {
   if (pointeeType != resultType.getPointeeType())
     return emitOpError("operand element type must match raw pointer pointee "
                        "type");
-  if (stringifyRustMutability(getMutability()) != resultType.getMutability())
+  if (getMutability() != resultType.getMutability())
     return emitOpError("mutability attribute must match raw pointer type");
   return success();
 }

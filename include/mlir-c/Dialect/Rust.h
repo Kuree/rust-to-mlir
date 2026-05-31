@@ -46,9 +46,11 @@ MLIR_CAPI_EXPORTED void rustMirModuleSetTarget(MlirModule module,
 MLIR_CAPI_EXPORTED MlirType
 rustMirTypeFromRustcPublicString(MlirContext context, MlirStringRef spelling);
 MLIR_CAPI_EXPORTED MlirType rustMirBoolTypeGet(MlirContext context);
+MLIR_CAPI_EXPORTED MlirType rustMirCharTypeGet(MlirContext context);
 MLIR_CAPI_EXPORTED MlirType rustMirIntTypeGet(MlirContext context,
                                               MlirStringRef spelling);
 MLIR_CAPI_EXPORTED MlirType rustMirUnitTypeGet(MlirContext context);
+MLIR_CAPI_EXPORTED MlirType rustMirNeverTypeGet(MlirContext context);
 MLIR_CAPI_EXPORTED MlirType rustMirOpaqueTypeGet(MlirContext context,
                                                  MlirStringRef spelling);
 MLIR_CAPI_EXPORTED MlirType rustTypedSlotTypeGet(MlirContext context,

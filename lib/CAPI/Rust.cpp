@@ -65,12 +65,13 @@ std::optional<unsigned> parseUnsigned(llvm::StringRef text) {
 }
 
 llvm::StringRef extractRustcSpanRepr(llvm::StringRef span) {
+  constexpr llvm::StringLiteral kRepr("repr:");
   span = span.trim();
-  size_t reprPos = span.find("repr:");
+  size_t reprPos = span.find(kRepr);
   if (reprPos == llvm::StringRef::npos)
     return span;
 
-  llvm::StringRef repr = span.drop_front(reprPos + strlen("repr:")).trim();
+  llvm::StringRef repr = span.drop_front(reprPos + kRepr.size()).trim();
   if (!repr.consume_front("\""))
     return span;
   size_t endQuote = repr.find('"');
@@ -83,7 +84,7 @@ std::optional<ParsedSpan> parseRustSpan(llvm::StringRef rawSpan) {
   llvm::StringRef span = extractRustcSpanRepr(rawSpan);
   SmallVector<llvm::StringRef, 6> matches;
 
-  llvm::Regex rangeRegex(
+  static const llvm::Regex rangeRegex(
       "^(.+):([0-9]+):([0-9]+):[[:space:]]*([0-9]+):([0-9]+)$");
   if (rangeRegex.match(span, &matches)) {
     auto startLine = parseUnsigned(matches[2]);
@@ -96,7 +97,7 @@ std::optional<ParsedSpan> parseRustSpan(llvm::StringRef rawSpan) {
                       *endLine,         *endColumn, true};
   }
 
-  llvm::Regex pointRegex("^(.+):([0-9]+):([0-9]+)$");
+  static const llvm::Regex pointRegex("^(.+):([0-9]+):([0-9]+)$");
   if (pointRegex.match(span, &matches)) {
     auto line = parseUnsigned(matches[2]);
     auto column = parseUnsigned(matches[3]);
@@ -109,9 +110,10 @@ std::optional<ParsedSpan> parseRustSpan(llvm::StringRef rawSpan) {
 }
 
 StringRef classifyRustcPublicPrimitiveTy(llvm::StringRef spelling) {
-  size_t kindPos = spelling.find("kind:");
+  constexpr llvm::StringLiteral kKind("kind:");
+  size_t kindPos = spelling.find(kKind);
   if (kindPos != StringRef::npos)
-    spelling = spelling.drop_front(kindPos + strlen("kind:")).trim();
+    spelling = spelling.drop_front(kindPos + kKind.size()).trim();
 
   if (spelling.starts_with("RigidTy(Bool)"))
     return "bool";
@@ -159,7 +161,7 @@ Type classifyRustType(MLIRContext *context, llvm::StringRef spelling) {
   if (s == "i8" || s == "i16" || s == "i32" || s == "i64" || s == "i128" ||
       s == "isize" || s == "u8" || s == "u16" || s == "u32" || s == "u64" ||
       s == "u128" || s == "usize")
-    return rustmir::IntType::get(context, s);
+    return rustmir::IntType::getFromSpelling(context, s);
   if (s.starts_with("&"))
     return rustmir::RefType::get(context, s);
   if (s.starts_with("*const") || s.starts_with("*mut"))
@@ -175,7 +177,7 @@ Type classifyRustType(MLIRContext *context, llvm::StringRef spelling) {
   if (s.contains("std::ops::RangeInclusive") ||
       s.contains("core::ops::RangeInclusive") ||
       s.contains("std::ops::Range\"") || s.contains("core::ops::Range\"")) {
-    Type usizeType = rustmir::IntType::get(context, "usize");
+    Type usizeType = rustmir::IntType::getFromSpelling(context, "usize");
     SmallVector<Type, 2> fields = {usizeType, usizeType};
     return rustmir::TypedTupleType::get(context, ArrayRef<Type>(fields));
   }
@@ -185,7 +187,7 @@ Type classifyRustType(MLIRContext *context, llvm::StringRef spelling) {
       s.contains("core::ops::RangeToInclusive") ||
       s.contains("std::ops::RangeTo\"") ||
       s.contains("core::ops::RangeTo\"")) {
-    Type usizeType = rustmir::IntType::get(context, "usize");
+    Type usizeType = rustmir::IntType::getFromSpelling(context, "usize");
     SmallVector<Type, 1> fields = {usizeType};
     return rustmir::TypedTupleType::get(context, ArrayRef<Type>(fields));
   }
@@ -439,11 +441,19 @@ MlirType rustMirBoolTypeGet(MlirContext context) {
 }
 
 MlirType rustMirIntTypeGet(MlirContext context, MlirStringRef spelling) {
-  return wrap(rustmir::IntType::get(unwrap(context), unwrap(spelling)));
+  return wrap(rustmir::IntType::getFromSpelling(unwrap(context), unwrap(spelling)));
+}
+
+MlirType rustMirCharTypeGet(MlirContext context) {
+  return wrap(rustmir::CharType::get(unwrap(context)));
 }
 
 MlirType rustMirUnitTypeGet(MlirContext context) {
   return wrap(rustmir::UnitType::get(unwrap(context)));
+}
+
+MlirType rustMirNeverTypeGet(MlirContext context) {
+  return wrap(rustmir::NeverType::get(unwrap(context)));
 }
 
 MlirType rustMirOpaqueTypeGet(MlirContext context, MlirStringRef spelling) {
@@ -475,16 +485,23 @@ MlirType rustTypedSliceTypeGet(MlirContext context, MlirType elementType) {
                                            unwrap(elementType)));
 }
 
+rustmir::RustMutability mutabilityFromString(llvm::StringRef mutability) {
+  return rustmir::symbolizeRustMutability(mutability)
+      .value_or(rustmir::RustMutability::Shared);
+}
+
 MlirType rustTypedRefTypeGet(MlirContext context, MlirStringRef mutability,
                              MlirType pointeeType) {
-  return wrap(rustmir::TypedRefType::get(unwrap(context), unwrap(mutability),
-                                         unwrap(pointeeType)));
+  return wrap(rustmir::TypedRefType::get(
+      unwrap(context), mutabilityFromString(unwrap(mutability)),
+      unwrap(pointeeType)));
 }
 
 MlirType rustTypedRawPtrTypeGet(MlirContext context, MlirStringRef mutability,
                                 MlirType pointeeType) {
-  return wrap(rustmir::TypedRawPtrType::get(unwrap(context), unwrap(mutability),
-                                            unwrap(pointeeType)));
+  return wrap(rustmir::TypedRawPtrType::get(
+      unwrap(context), mutabilityFromString(unwrap(mutability)),
+      unwrap(pointeeType)));
 }
 
 MlirAttribute rustMirSwitchTargetsAttrGet(MlirContext context,

@@ -1,51 +1,51 @@
 // RUN: rust-opt --convert-rust-typed-memory-to-llvm %s | FileCheck %s
 
 module {
-  func.func @memory(%arg: !rust.typed.ref<"shared", i32>) -> !rust.typed.rawptr<"const", i32> {
+  func.func @memory(%arg: !rust.typed.ref<shared, i32>) -> !rust.typed.rawptr<const, i32> {
     %slot = rust.typed.local_slot {address_taken = true, index = 0 : i64, name = "_0"} : <i32>
-    %refslot = rust.typed.local_slot {index = 1 : i64, name = "_1"} : <!rust.typed.ref<"shared", i32>>
+    %refslot = rust.typed.local_slot {index = 1 : i64, name = "_1"} : <!rust.typed.ref<shared, i32>>
     %tuple_slot = rust.typed.local_slot {address_taken = true, index = 2 : i64, name = "_2"} : <!rust.typed.tuple<i32, i32>>
     %array_slot = rust.typed.local_slot {address_taken = true, index = 3 : i64, name = "_3"} : <!rust.typed.array<i32, 4>>
     %value = llvm.mlir.constant(7 : i32) : i32
     rust.typed.store %value, %slot : i32, !rust.typed.slot<i32>
     %loaded = rust.typed.load %slot : !rust.typed.slot<i32> -> i32
-    %ref = rust.typed.borrow %slot {borrow_kind = #rust.borrow_kind<Shared>, mutability = #rust.mutability<shared>} : !rust.typed.slot<i32> -> !rust.typed.ref<"shared", i32>
-    rust.typed.store %ref, %refslot : !rust.typed.ref<"shared", i32>, !rust.typed.slot<!rust.typed.ref<"shared", i32>>
-    %loaded_ref = rust.typed.load %refslot : !rust.typed.slot<!rust.typed.ref<"shared", i32>> -> !rust.typed.ref<"shared", i32>
-    func.call @consume_ref(%loaded_ref) : (!rust.typed.ref<"shared", i32>) -> ()
+    %ref = rust.typed.borrow %slot {borrow_kind = #rust.borrow_kind<Shared>, mutability = #rust.mutability<shared>} : !rust.typed.slot<i32> -> !rust.typed.ref<shared, i32>
+    rust.typed.store %ref, %refslot : !rust.typed.ref<shared, i32>, !rust.typed.slot<!rust.typed.ref<shared, i32>>
+    %loaded_ref = rust.typed.load %refslot : !rust.typed.slot<!rust.typed.ref<shared, i32>> -> !rust.typed.ref<shared, i32>
+    func.call @consume_ref(%loaded_ref) : (!rust.typed.ref<shared, i32>) -> ()
     %field = rust.typed.field_addr %tuple_slot {index = 1 : i64} : !rust.typed.slot<!rust.typed.tuple<i32, i32>> -> <i32>
-    %field_ref = rust.typed.borrow %field {borrow_kind = #rust.borrow_kind<Shared>, mutability = #rust.mutability<shared>} : !rust.typed.addr<i32> -> !rust.typed.ref<"shared", i32>
-    func.call @consume_ref(%field_ref) : (!rust.typed.ref<"shared", i32>) -> ()
+    %field_ref = rust.typed.borrow %field {borrow_kind = #rust.borrow_kind<Shared>, mutability = #rust.mutability<shared>} : !rust.typed.addr<i32> -> !rust.typed.ref<shared, i32>
+    func.call @consume_ref(%field_ref) : (!rust.typed.ref<shared, i32>) -> ()
     %index = llvm.mlir.constant(2 : i64) : i64
     %element = rust.typed.index_addr %array_slot[%index] : !rust.typed.slot<!rust.typed.array<i32, 4>>, i64 -> <i32>
     rust.typed.store %value, %element : i32, !rust.typed.addr<i32>
-    %raw = rust.typed.address_of %slot {mutability = #rust.mutability<const>, raw_ptr_kind = #rust.raw_ptr_kind<Const>} : !rust.typed.slot<i32> -> !rust.typed.rawptr<"const", i32>
-    func.return %raw : !rust.typed.rawptr<"const", i32>
+    %raw = rust.typed.address_of %slot {mutability = #rust.mutability<const>, raw_ptr_kind = #rust.raw_ptr_kind<Const>} : !rust.typed.slot<i32> -> !rust.typed.rawptr<const, i32>
+    func.return %raw : !rust.typed.rawptr<const, i32>
   }
 
-  func.func private @consume_ref(!rust.typed.ref<"shared", i32>)
+  func.func private @consume_ref(!rust.typed.ref<shared, i32>)
 
   func.func @slice_memory() {
     %array_slot = rust.typed.local_slot {address_taken = true, index = 4 : i64, name = "_4"} : <!rust.typed.array<i32, 4>>
-    %slice_slot = rust.typed.local_slot {index = 5 : i64, name = "_5"} : <!rust.typed.ref<"shared", !rust.typed.slice<i32>>>
-    %array_ref = rust.typed.borrow %array_slot {borrow_kind = #rust.borrow_kind<Shared>, mutability = #rust.mutability<shared>} : !rust.typed.slot<!rust.typed.array<i32, 4>> -> !rust.typed.ref<"shared", !rust.typed.array<i32, 4>>
-    %slice = rust.typed.slice_from_array %array_ref : !rust.typed.ref<"shared", !rust.typed.array<i32, 4>> -> !rust.typed.ref<"shared", !rust.typed.slice<i32>>
-    rust.typed.store %slice, %slice_slot : !rust.typed.ref<"shared", !rust.typed.slice<i32>>, !rust.typed.slot<!rust.typed.ref<"shared", !rust.typed.slice<i32>>>
-    %loaded_slice = rust.typed.load %slice_slot : !rust.typed.slot<!rust.typed.ref<"shared", !rust.typed.slice<i32>>> -> !rust.typed.ref<"shared", !rust.typed.slice<i32>>
-    %len = rust.typed.ptr_metadata %loaded_slice : !rust.typed.ref<"shared", !rust.typed.slice<i32>> -> i64
+    %slice_slot = rust.typed.local_slot {index = 5 : i64, name = "_5"} : <!rust.typed.ref<shared, !rust.typed.slice<i32>>>
+    %array_ref = rust.typed.borrow %array_slot {borrow_kind = #rust.borrow_kind<Shared>, mutability = #rust.mutability<shared>} : !rust.typed.slot<!rust.typed.array<i32, 4>> -> !rust.typed.ref<shared, !rust.typed.array<i32, 4>>
+    %slice = rust.typed.slice_from_array %array_ref : !rust.typed.ref<shared, !rust.typed.array<i32, 4>> -> !rust.typed.ref<shared, !rust.typed.slice<i32>>
+    rust.typed.store %slice, %slice_slot : !rust.typed.ref<shared, !rust.typed.slice<i32>>, !rust.typed.slot<!rust.typed.ref<shared, !rust.typed.slice<i32>>>
+    %loaded_slice = rust.typed.load %slice_slot : !rust.typed.slot<!rust.typed.ref<shared, !rust.typed.slice<i32>>> -> !rust.typed.ref<shared, !rust.typed.slice<i32>>
+    %len = rust.typed.ptr_metadata %loaded_slice : !rust.typed.ref<shared, !rust.typed.slice<i32>> -> i64
     %index = llvm.mlir.constant(2 : i64) : i64
-    %element = rust.typed.index_addr %loaded_slice[%index] : !rust.typed.ref<"shared", !rust.typed.slice<i32>>, i64 -> <i32>
+    %element = rust.typed.index_addr %loaded_slice[%index] : !rust.typed.ref<shared, !rust.typed.slice<i32>>, i64 -> <i32>
     %value = rust.typed.load %element : !rust.typed.addr<i32> -> i32
-    %sub = rust.typed.subslice %loaded_slice {from_end = true, from_index = 1 : i64, to_index = 1 : i64} : !rust.typed.ref<"shared", !rust.typed.slice<i32>> -> !rust.typed.ref<"shared", !rust.typed.slice<i32>>
-    %sub_len = rust.typed.ptr_metadata %sub : !rust.typed.ref<"shared", !rust.typed.slice<i32>> -> i64
+    %sub = rust.typed.subslice %loaded_slice {from_end = true, from_index = 1 : i64, to_index = 1 : i64} : !rust.typed.ref<shared, !rust.typed.slice<i32>> -> !rust.typed.ref<shared, !rust.typed.slice<i32>>
+    %sub_len = rust.typed.ptr_metadata %sub : !rust.typed.ref<shared, !rust.typed.slice<i32>> -> i64
     %range_start = llvm.mlir.constant(1 : i64) : i64
     %range_len = llvm.mlir.constant(2 : i64) : i64
-    %range = rust.typed.slice_range %loaded_slice[%range_start, %range_len] : !rust.typed.ref<"shared", !rust.typed.slice<i32>>, i64, i64 -> !rust.typed.ref<"shared", !rust.typed.slice<i32>>
-    %range_metadata = rust.typed.ptr_metadata %range : !rust.typed.ref<"shared", !rust.typed.slice<i32>> -> i64
+    %range = rust.typed.slice_range %loaded_slice[%range_start, %range_len] : !rust.typed.ref<shared, !rust.typed.slice<i32>>, i64, i64 -> !rust.typed.ref<shared, !rust.typed.slice<i32>>
+    %range_metadata = rust.typed.ptr_metadata %range : !rust.typed.ref<shared, !rust.typed.slice<i32>> -> i64
     %array_range_start = llvm.mlir.constant(2 : i64) : i64
     %array_range_len = llvm.mlir.constant(1 : i64) : i64
-    %array_range = rust.typed.slice_range %array_ref[%array_range_start, %array_range_len] : !rust.typed.ref<"shared", !rust.typed.array<i32, 4>>, i64, i64 -> !rust.typed.ref<"shared", !rust.typed.slice<i32>>
-    %array_range_metadata = rust.typed.ptr_metadata %array_range : !rust.typed.ref<"shared", !rust.typed.slice<i32>> -> i64
+    %array_range = rust.typed.slice_range %array_ref[%array_range_start, %array_range_len] : !rust.typed.ref<shared, !rust.typed.array<i32, 4>>, i64, i64 -> !rust.typed.ref<shared, !rust.typed.slice<i32>>
+    %array_range_metadata = rust.typed.ptr_metadata %array_range : !rust.typed.ref<shared, !rust.typed.slice<i32>> -> i64
     func.call @consume_i64(%len) : (i64) -> ()
     func.call @consume_i64(%sub_len) : (i64) -> ()
     func.call @consume_i64(%range_metadata) : (i64) -> ()
