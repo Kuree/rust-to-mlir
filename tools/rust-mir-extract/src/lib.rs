@@ -7,6 +7,7 @@ extern crate rustc_public;
 
 use rustc_public::crate_def::CrateDef;
 use rustc_public::mir::alloc::GlobalAlloc;
+use rustc_public::mir::mono::Instance;
 use rustc_public::mir::{
     AggregateKind, Mutability, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind,
     TerminatorKind,
@@ -133,15 +134,11 @@ type RustMirPlaceCreate =
 type RustMirCopyCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
 type RustMirMoveCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
 type RustMirConstantI64Create =
-    unsafe extern "C" fn(MlirLocation, i64, MlirStringRef, MlirStringRef) -> MlirOperation;
+    unsafe extern "C" fn(MlirLocation, i64, MlirStringRef, MlirType) -> MlirOperation;
 type RustMirConstantCreate =
-    unsafe extern "C" fn(MlirLocation, MlirStringRef, MlirStringRef) -> MlirOperation;
-type RustMirConstantStringCreate = unsafe extern "C" fn(
-    MlirLocation,
-    MlirStringRef,
-    MlirStringRef,
-    MlirStringRef,
-) -> MlirOperation;
+    unsafe extern "C" fn(MlirLocation, MlirStringRef, MlirType) -> MlirOperation;
+type RustMirConstantStringCreate =
+    unsafe extern "C" fn(MlirLocation, MlirStringRef, MlirStringRef, MlirType) -> MlirOperation;
 type RustMirOperandDebugCreate =
     unsafe extern "C" fn(MlirLocation, MlirStringRef, MlirStringRef) -> MlirOperation;
 type RustMirRvalueBinaryOpCreate = unsafe extern "C" fn(
@@ -222,6 +219,7 @@ type RustMirCallCreate = unsafe extern "C" fn(
     MlirStringRef,
     MlirStringRef,
     bool,
+    MlirStringRef,
 ) -> MlirOperation;
 type RustMirTargetTerminatorCreate = unsafe extern "C" fn(
     MlirLocation,
@@ -812,6 +810,11 @@ impl MirType {
         // (which reads start/end as usize fields) is preserved. Detection is by
         // the structured def path, not substring matching of a Debug string.
         if let Some(field_count) = range_field_count(&def.name()) {
+            // A fieldless range (`..`) is zero-sized; model it as unit rather
+            // than an empty tuple (which has no round-trippable spelling).
+            if field_count == 0 {
+                return Self::Unit;
+            }
             return Self::Tuple((0..field_count).map(|_| Self::Int("usize")).collect());
         }
 
@@ -915,7 +918,7 @@ enum MirOperand {
 }
 
 struct MirConstant {
-    ty: String,
+    ty: MirType,
     debug: String,
     value: Option<i64>,
     string: Option<String>,
@@ -934,6 +937,35 @@ struct MirCallMetadata {
     output: String,
     abi: String,
     c_variadic: bool,
+    // Structured range-expression kind when this is a slice/array index call,
+    // derived from the callee's generic arguments (the enum symbol, e.g.
+    // "FromToInclusive"); `None` for non-range calls.
+    range_kind: Option<String>,
+}
+
+/// Maps a `core::ops::Range*` def path to the dialect range-kind enum symbol.
+fn range_kind_symbol(generic_args: &GenericArgs) -> Option<&'static str> {
+    for arg in &generic_args.0 {
+        let GenericArgKind::Type(ty) = arg else {
+            continue;
+        };
+        let TyKind::RigidTy(RigidTy::Adt(def, _)) = ty.kind() else {
+            continue;
+        };
+        let name = def.name();
+        let segment = name.rsplit("::").next().unwrap_or(&name);
+        let segment = segment.split('<').next().unwrap_or(segment);
+        return Some(match segment {
+            "RangeFull" => "Full",
+            "Range" => "FromTo",
+            "RangeFrom" => "From",
+            "RangeTo" => "To",
+            "RangeInclusive" => "FromToInclusive",
+            "RangeToInclusive" => "ToInclusive",
+            _ => continue,
+        });
+    }
+    None
 }
 
 impl MirCallMetadata {
@@ -949,15 +981,26 @@ impl MirCallMetadata {
         let value = &sig.value;
         let inputs = format!("{} input(s)", value.inputs().len());
 
+        // rustc's mangled name is the stable, canonical identity for the
+        // resolved callee instance. For unresolvable callees (e.g. a generic
+        // body's polymorphic call) fall back to the readable def path.
+        let mangled = Instance::resolve(def, &generic_args)
+            .ok()
+            .map(|instance| instance.mangled_name().to_string())
+            .unwrap_or_else(|| def.name().to_string());
+
+        let range_kind = range_kind_symbol(&generic_args).map(String::from);
+
         Some(Self {
             name: def.name().to_string(),
-            def: format!("{def:?}"),
-            ty: format!("FnDef({})", def.name()),
+            def: def.name().to_string(),
+            ty: mangled,
             generic_args: format!("{generic_args:?}"),
             inputs,
             output: "output".to_string(),
             abi: normalize_abi(&value.abi),
             c_variadic: value.c_variadic,
+            range_kind,
         })
     }
 }
@@ -1279,7 +1322,7 @@ impl MirOperand {
                 let scalar = constant_scalar_text(constant);
                 let string = constant_string_text(constant);
                 Self::Constant(MirConstant {
-                    ty: format!("{:?}", constant.const_.ty()),
+                    ty: MirType::from_public(constant.const_.ty()),
                     debug: string
                         .as_ref()
                         .or(scalar.as_ref())
@@ -1644,6 +1687,11 @@ impl MlirEmitter {
                             .as_ref()
                             .map(|metadata| metadata.c_variadic)
                             .unwrap_or(false),
+                        mlir_optional_string(
+                            metadata
+                                .as_ref()
+                                .and_then(|metadata| metadata.range_kind.as_deref()),
+                        ),
                     )
                 }
             }
@@ -1709,6 +1757,11 @@ impl MlirEmitter {
                 let variant_types = variants
                     .iter()
                     .map(|fields| {
+                        // A zero-field variant is zero-sized: use unit, since an
+                        // empty tuple type has no round-trippable spelling.
+                        if fields.is_empty() {
+                            return unsafe { (self.api.mir_unit_type_get)(self.context) };
+                        }
                         let field_types = fields
                             .iter()
                             .map(|field| self.type_from_mir(field))
@@ -1856,13 +1909,14 @@ impl MlirEmitter {
                 unsafe { (self.api.move_create)(self.location(span), place) }
             }
             MirOperand::Constant(constant) => {
+                let ty = self.type_from_mir(&constant.ty);
                 if let Some(value) = constant.value {
                     unsafe {
                         (self.api.constant_i64_create)(
                             self.location(span),
                             value,
                             mlir_string(&constant.debug),
-                            mlir_string(&constant.ty),
+                            ty,
                         )
                     }
                 } else if let Some(value) = &constant.string {
@@ -1871,7 +1925,7 @@ impl MlirEmitter {
                             self.location(span),
                             mlir_string(value),
                             mlir_string(&constant.debug),
-                            mlir_string(&constant.ty),
+                            ty,
                         )
                     }
                 } else {
@@ -1879,7 +1933,7 @@ impl MlirEmitter {
                         (self.api.constant_create)(
                             self.location(span),
                             mlir_string(&constant.debug),
-                            mlir_string(&constant.ty),
+                            ty,
                         )
                     }
                 }

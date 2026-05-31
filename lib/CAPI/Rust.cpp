@@ -109,93 +109,6 @@ std::optional<ParsedSpan> parseRustSpan(llvm::StringRef rawSpan) {
   return std::nullopt;
 }
 
-StringRef classifyRustcPublicPrimitiveTy(llvm::StringRef spelling) {
-  constexpr llvm::StringLiteral kKind("kind:");
-  size_t kindPos = spelling.find(kKind);
-  if (kindPos != StringRef::npos)
-    spelling = spelling.drop_front(kindPos + kKind.size()).trim();
-
-  if (spelling.starts_with("RigidTy(Bool)"))
-    return "bool";
-  if (spelling.starts_with("RigidTy(Int(I8))"))
-    return "i8";
-  if (spelling.starts_with("RigidTy(Int(I16))"))
-    return "i16";
-  if (spelling.starts_with("RigidTy(Int(I32))"))
-    return "i32";
-  if (spelling.starts_with("RigidTy(Int(I64))"))
-    return "i64";
-  if (spelling.starts_with("RigidTy(Int(I128))"))
-    return "i128";
-  if (spelling.starts_with("RigidTy(Int(Isize))"))
-    return "isize";
-  if (spelling.starts_with("RigidTy(Uint(U8))"))
-    return "u8";
-  if (spelling.starts_with("RigidTy(Uint(U16))"))
-    return "u16";
-  if (spelling.starts_with("RigidTy(Uint(U32))"))
-    return "u32";
-  if (spelling.starts_with("RigidTy(Uint(U64))"))
-    return "u64";
-  if (spelling.starts_with("RigidTy(Uint(U128))"))
-    return "u128";
-  if (spelling.starts_with("RigidTy(Uint(Usize))"))
-    return "usize";
-  return "";
-}
-
-Type classifyRustType(MLIRContext *context, llvm::StringRef spelling) {
-  llvm::StringRef s = spelling.trim();
-  StringRef primitive = classifyRustcPublicPrimitiveTy(s);
-  if (!primitive.empty())
-    s = primitive;
-
-  if (s == "bool")
-    return rustmir::BoolType::get(context);
-  if (s == "char")
-    return rustmir::CharType::get(context);
-  if (s == "()" || s == "unit")
-    return rustmir::UnitType::get(context);
-  if (s == "!" || s == "never")
-    return rustmir::NeverType::get(context);
-  if (s == "i8" || s == "i16" || s == "i32" || s == "i64" || s == "i128" ||
-      s == "isize" || s == "u8" || s == "u16" || s == "u32" || s == "u64" ||
-      s == "u128" || s == "usize")
-    return rustmir::IntType::getFromSpelling(context, s);
-  if (s.starts_with("&"))
-    return rustmir::RefType::get(context, s);
-  if (s.starts_with("*const") || s.starts_with("*mut"))
-    return rustmir::RawPtrType::get(context, s);
-  if (s.starts_with("(") || s.contains("RigidTy(Tuple("))
-    return rustmir::TupleType::get(context, s);
-  if (s.starts_with("[") && s.contains(";"))
-    return rustmir::ArrayType::get(context, s);
-  if (s.starts_with("["))
-    return rustmir::SliceType::get(context, s);
-  if (s.starts_with("fn(") || s.starts_with("unsafe fn("))
-    return rustmir::FnType::get(context, s);
-  if (s.contains("std::ops::RangeInclusive") ||
-      s.contains("core::ops::RangeInclusive") ||
-      s.contains("std::ops::Range\"") || s.contains("core::ops::Range\"")) {
-    Type usizeType = rustmir::IntType::getFromSpelling(context, "usize");
-    SmallVector<Type, 2> fields = {usizeType, usizeType};
-    return rustmir::TypedTupleType::get(context, ArrayRef<Type>(fields));
-  }
-  if (s.contains("std::ops::RangeFrom") ||
-      s.contains("core::ops::RangeFrom") ||
-      s.contains("std::ops::RangeToInclusive") ||
-      s.contains("core::ops::RangeToInclusive") ||
-      s.contains("std::ops::RangeTo\"") ||
-      s.contains("core::ops::RangeTo\"")) {
-    Type usizeType = rustmir::IntType::getFromSpelling(context, "usize");
-    SmallVector<Type, 1> fields = {usizeType};
-    return rustmir::TypedTupleType::get(context, ArrayRef<Type>(fields));
-  }
-  if (s.contains("::"))
-    return rustmir::AdtType::getIdentified(context, s);
-  return rustmir::OpaqueType::get(context, s);
-}
-
 StringAttr stringAttr(MLIRContext *context, MlirStringRef string) {
   return StringAttr::get(context, unwrap(string));
 }
@@ -431,9 +344,14 @@ void rustMirModuleSetTarget(MlirModule module, int64_t pointerWidth,
               DataLayoutSpecAttr::get(context, entries));
 }
 
+// Fallback for the genuinely opaque types the extractor cannot model
+// structurally (fn items/pointers, str, closures, trait objects, ...). The
+// spelling is rustc's Debug rendering, preserved so passes can still recognise
+// e.g. `RigidTy(Str)`. All common types are built structurally in the
+// extractor, so this no longer parses spellings.
 MlirType rustMirTypeFromRustcPublicString(MlirContext context,
                                           MlirStringRef spelling) {
-  return wrap(classifyRustType(unwrap(context), unwrap(spelling)));
+  return wrap(rustmir::OpaqueType::get(unwrap(context), unwrap(spelling)));
 }
 
 MlirType rustMirBoolTypeGet(MlirContext context) {
@@ -631,35 +549,34 @@ MlirOperation rustMirMoveCreate(MlirLocation location, MlirOperation place) {
 }
 
 MlirOperation createConstantOperation(MlirLocation location, Attribute value,
-                                      MlirStringRef debug, MlirStringRef type) {
+                                      MlirStringRef debug, MlirType type) {
   MLIRContext *context = unwrap(location).getContext();
   Builder builder(context);
   OperationState state(unwrap(location), "rust.mir.constant");
   if (value)
     state.addAttribute("value", value);
   addStringAttr(context, state, "debug", debug);
-  addStringAttr(context, state, "ty", type);
+  if (Type ty = unwrap(type))
+    state.addAttribute("ty", TypeAttr::get(ty));
   state.addAttribute("mir_kind", builder.getStringAttr("Constant"));
   return createOperation(state);
 }
 
 MlirOperation rustMirConstantI64Create(MlirLocation location, int64_t value,
-                                       MlirStringRef debug,
-                                       MlirStringRef type) {
+                                       MlirStringRef debug, MlirType type) {
   Builder builder(unwrap(location).getContext());
   return createConstantOperation(location, builder.getI64IntegerAttr(value),
                                  debug, type);
 }
 
 MlirOperation rustMirConstantCreate(MlirLocation location, MlirStringRef debug,
-                                    MlirStringRef type) {
+                                    MlirType type) {
   return createConstantOperation(location, Attribute(), debug, type);
 }
 
 MlirOperation rustMirConstantStringCreate(MlirLocation location,
                                           MlirStringRef value,
-                                          MlirStringRef debug,
-                                          MlirStringRef type) {
+                                          MlirStringRef debug, MlirType type) {
   MLIRContext *context = unwrap(location).getContext();
   Builder builder(context);
   return createConstantOperation(location, builder.getStringAttr(unwrap(value)),
@@ -858,7 +775,8 @@ MlirOperation rustMirCallCreate(
     MlirOperation const *args, MlirStringRef debug, MlirStringRef calleeName,
     MlirStringRef calleeDef, MlirStringRef calleeType,
     MlirStringRef calleeGenericArgs, MlirStringRef calleeInputs,
-    MlirStringRef calleeOutput, MlirStringRef calleeAbi, bool calleeCVariadic) {
+    MlirStringRef calleeOutput, MlirStringRef calleeAbi, bool calleeCVariadic,
+    MlirStringRef rangeKind) {
   MLIRContext *context = unwrap(location).getContext();
   Builder builder(context);
   OperationState state(unwrap(location), "rust.mir.call");
@@ -880,6 +798,9 @@ MlirOperation rustMirCallCreate(
   if (calleeAbi.data || calleeAbi.length != 0)
     state.addAttribute("callee_c_variadic",
                        builder.getBoolAttr(calleeCVariadic));
+  addEnumAttr<rustmir::RustRangeKind, rustmir::RustRangeKindAttr>(
+      context, state, "range_kind", rangeKind,
+      rustmir::symbolizeRustRangeKind);
   MlirOperation wrapped = createRegionOperation(state);
   Operation *op = unwrap(wrapped);
   appendOwnedChild(op, func);

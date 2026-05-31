@@ -212,6 +212,7 @@ def Rust_CallOp : Rust_Op<"call", [NoTerminator, SingleBlock]> {
                        OptionalAttr<StrAttr>:$callee_output,
                        OptionalAttr<RustAbiAttr>:$callee_abi,
                        OptionalAttr<BoolAttr>:$callee_c_variadic,
+                       OptionalAttr<RustRangeKindAttr>:$range_kind,
                        OptionalAttr<StrAttr>:$span);
   let regions = (region SizedRegion<1>:$body);
   let hasVerifier = 1;
@@ -253,7 +254,7 @@ def Rust_ConstantOp : Rust_Op<"constant"> {
   let summary = "MIR Operand::Constant";
   let arguments = (ins OptionalAttr<AnyAttr>:$value,
                        OptionalAttr<StrAttr>:$debug,
-                       OptionalAttr<StrAttr>:$ty,
+                       OptionalAttr<TypeAttr>:$ty,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$span);
   let assemblyFormat = "attr-dict";

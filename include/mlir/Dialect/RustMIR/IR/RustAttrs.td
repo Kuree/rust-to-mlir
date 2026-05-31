@@ -140,4 +140,15 @@ def RustCastKind : Rust_I32EnumAttr<"RustCastKind",
 ]>;
 def RustCastKindAttr : Rust_EnumAttr<RustCastKind, "cast_kind">;
 
+def RustRangeKind : Rust_I32EnumAttr<"RustRangeKind",
+    "Rust range expression kind used to index a slice/array", [
+  I32EnumAttrCase<"Full", 0, "Full">,
+  I32EnumAttrCase<"FromTo", 1, "FromTo">,
+  I32EnumAttrCase<"From", 2, "From">,
+  I32EnumAttrCase<"To", 3, "To">,
+  I32EnumAttrCase<"FromToInclusive", 4, "FromToInclusive">,
+  I32EnumAttrCase<"ToInclusive", 5, "ToInclusive">
+]>;
+def RustRangeKindAttr : Rust_EnumAttr<RustRangeKind, "range_kind">;
+
 #endif // MLIR_DIALECT_RUSTMIR_IR_RUSTATTRS_TD

@@ -74,66 +74,6 @@ StringAttr getAssertMessageAttr(rust::mir::AssertOp assertOp,
   return debugAttr;
 }
 
-Type typeFromRustDebug(MLIRContext *context, StringRef spelling) {
-  StringRef s = spelling.trim();
-  if (s == "()" || s.contains("RigidTy(Tuple([]))"))
-    return rust::mir::UnitType::get(context);
-  if (s.contains("RigidTy(Bool)"))
-    return rust::mir::BoolType::get(context);
-  if (s.contains("RigidTy(Int(I8))"))
-    return rust::mir::IntType::getFromSpelling(context, "i8");
-  if (s.contains("RigidTy(Int(I16))"))
-    return rust::mir::IntType::getFromSpelling(context, "i16");
-  if (s.contains("RigidTy(Int(I32))"))
-    return rust::mir::IntType::getFromSpelling(context, "i32");
-  if (s.contains("RigidTy(Int(I64))"))
-    return rust::mir::IntType::getFromSpelling(context, "i64");
-  if (s.contains("RigidTy(Int(I128))"))
-    return rust::mir::IntType::getFromSpelling(context, "i128");
-  if (s.contains("RigidTy(Int(Isize))"))
-    return rust::mir::IntType::getFromSpelling(context, "isize");
-  if (s.contains("RigidTy(Uint(U8))"))
-    return rust::mir::IntType::getFromSpelling(context, "u8");
-  if (s.contains("RigidTy(Uint(U16))"))
-    return rust::mir::IntType::getFromSpelling(context, "u16");
-  if (s.contains("RigidTy(Uint(U32))"))
-    return rust::mir::IntType::getFromSpelling(context, "u32");
-  if (s.contains("RigidTy(Uint(U64))"))
-    return rust::mir::IntType::getFromSpelling(context, "u64");
-  if (s.contains("RigidTy(Uint(U128))"))
-    return rust::mir::IntType::getFromSpelling(context, "u128");
-  if (s.contains("RigidTy(Uint(Usize))"))
-    return rust::mir::IntType::getFromSpelling(context, "usize");
-  if (s.contains("RigidTy(Ref("))
-    return rust::mir::RefType::get(context, s);
-  if (s.contains("RigidTy(Slice("))
-    return rust::mir::SliceType::get(context, s);
-  if (s.contains("RigidTy(Array("))
-    return rust::mir::ArrayType::get(context, s);
-  if (s.contains("std::ops::RangeInclusive") ||
-      s.contains("core::ops::RangeInclusive") ||
-      s.contains("std::ops::Range\"") || s.contains("core::ops::Range\"")) {
-    Type usizeType = rust::mir::IntType::getFromSpelling(context, "usize");
-    SmallVector<Type, 2> fields = {usizeType, usizeType};
-    return rust::mir::TypedTupleType::get(context, ArrayRef<Type>(fields));
-  }
-  if (s.contains("std::ops::RangeFrom") ||
-      s.contains("core::ops::RangeFrom") ||
-      s.contains("std::ops::RangeToInclusive") ||
-      s.contains("core::ops::RangeToInclusive") ||
-      s.contains("std::ops::RangeTo\"") ||
-      s.contains("core::ops::RangeTo\"")) {
-    Type usizeType = rust::mir::IntType::getFromSpelling(context, "usize");
-    SmallVector<Type, 1> fields = {usizeType};
-    return rust::mir::TypedTupleType::get(context, ArrayRef<Type>(fields));
-  }
-  if (s.contains("RigidTy(Adt("))
-    return rust::mir::AdtType::getIdentified(context, s);
-  if (s.contains("RigidTy(FnDef("))
-    return rust::mir::FnType::get(context, s);
-  return rust::mir::OpaqueType::get(context, s);
-}
-
 std::optional<std::string> extractRustDefName(StringRef text) {
   StringRef needle("name: \"");
   size_t start = text.find(needle);
@@ -166,9 +106,13 @@ std::optional<std::string> extractCallRustName(rust::mir::CallOp call) {
   if (!callee)
     return std::nullopt;
 
-  if (std::optional<StringRef> ty = callee.getTy())
-    if (std::optional<std::string> name = extractRustDefName(*ty))
-      return name;
+  // A function-item callee has no structural model yet, so its type is carried
+  // as an OpaqueType whose spelling is rustc's Debug rendering (e.g. FnDef).
+  if (std::optional<Type> ty = callee.getTy())
+    if (auto opaque = dyn_cast<rust::mir::OpaqueType>(*ty))
+      if (std::optional<std::string> name =
+              extractRustDefName(opaque.getSpelling()))
+        return name;
   if (std::optional<StringRef> debug = callee.getDebug())
     return extractRustDefName(*debug);
   return std::nullopt;
@@ -198,23 +142,25 @@ std::optional<RangeIndexKind> getRangeIndexKind(rust::mir::CallOp call,
   if (!isRustIndexCallName(rustName))
     return std::nullopt;
 
-  std::optional<StringRef> genericArgs = call.getCalleeGenericArgs();
-  if (!genericArgs)
+  // The range kind is carried structurally on the call (derived by the
+  // extractor from the callee's generic arguments), not parsed from a string.
+  std::optional<rust::mir::RustRangeKind> kind = call.getRangeKind();
+  if (!kind)
     return std::nullopt;
-
-  StringRef args = *genericArgs;
-  if (args.contains("RangeFull"))
+  switch (*kind) {
+  case rust::mir::RustRangeKind::Full:
     return RangeIndexKind::Full;
-  if (args.contains("RangeToInclusive"))
-    return RangeIndexKind::ToInclusive;
-  if (args.contains("RangeInclusive"))
-    return RangeIndexKind::FromToInclusive;
-  if (args.contains("RangeFrom"))
-    return RangeIndexKind::From;
-  if (args.contains("RangeTo"))
-    return RangeIndexKind::To;
-  if (args.contains("Range"))
+  case rust::mir::RustRangeKind::FromTo:
     return RangeIndexKind::FromTo;
+  case rust::mir::RustRangeKind::From:
+    return RangeIndexKind::From;
+  case rust::mir::RustRangeKind::To:
+    return RangeIndexKind::To;
+  case rust::mir::RustRangeKind::FromToInclusive:
+    return RangeIndexKind::FromToInclusive;
+  case rust::mir::RustRangeKind::ToInclusive:
+    return RangeIndexKind::ToInclusive;
+  }
   return std::nullopt;
 }
 
@@ -225,20 +171,14 @@ std::string getCAbiSymbol(StringRef rustName) {
   return rustName.str();
 }
 
-bool needsSymbolDisambiguator(StringRef identity) {
-  return identity.contains("GenericArgs([") &&
-         !identity.contains("GenericArgs([])");
-}
-
-std::string getTypedSymbol(StringRef rustName, StringRef identity) {
-  std::string symbol = (rustName + "_typed").str();
-  if (!needsSymbolDisambiguator(identity))
-    return symbol;
-
-  auto hash = static_cast<uint64_t>(llvm::hash_value(identity));
-  symbol += "_";
-  symbol += llvm::utohexstr(hash);
-  return symbol;
+// The readable, path-based typed symbol (e.g. `crate::foo_typed`). The pipeline
+// extracts polymorphic function bodies (one per definition, not per
+// monomorphization), so a per-instance disambiguator would never agree between
+// a generic definition and its concrete call sites. The stable per-instance
+// identity (rustc's mangled name) is carried as call/function metadata instead;
+// when true monomorphization is added it becomes the disambiguation key here.
+std::string getTypedSymbol(StringRef rustName) {
+  return (rustName + "_typed").str();
 }
 
 std::optional<std::string> getPlaceLocalName(rust::mir::PlaceOp place) {
@@ -511,8 +451,8 @@ std::optional<Type> inferOperandType(Operation *operand,
     return inferPlaceType(place, slots);
 
   if (auto constant = dyn_cast_or_null<rust::mir::ConstantOp>(operand))
-    if (std::optional<StringRef> ty = constant.getTy())
-      return typeFromRustDebug(operand->getContext(), *ty);
+    if (std::optional<Type> ty = constant.getTy())
+      return *ty;
 
   return std::nullopt;
 }
@@ -543,8 +483,8 @@ std::optional<Value> materializeOperand(Operation *operand, OpBuilder &builder,
 
   if (auto constant = dyn_cast_or_null<rust::mir::ConstantOp>(operand)) {
     if (!expectedType) {
-      if (std::optional<StringRef> ty = constant.getTy())
-        expectedType = typeFromRustDebug(operand->getContext(), *ty);
+      if (std::optional<Type> ty = constant.getTy())
+        expectedType = *ty;
     }
     if (!expectedType)
       return std::nullopt;
@@ -1349,10 +1289,8 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
   rust::mir::RustAbiAttr abiAttr = rust::mir::RustAbiAttr::get(
       op.getContext(),
       isCAbi ? rust::mir::RustAbi::C : rust::mir::RustAbi::Rust);
-  std::optional<StringRef> calleeType = op.getCalleeType();
   std::string callee =
-      isCAbi ? getCAbiSymbol(rustNameRef)
-             : getTypedSymbol(rustNameRef, calleeType.value_or(StringRef()));
+      isCAbi ? getCAbiSymbol(rustNameRef) : getTypedSymbol(rustNameRef);
   auto typedCall = mlir::rust::createOp<rust::mir::TypedCallOp>(
       builder, loc, resultTypes,
       FlatSymbolRefAttr::get(op.getContext(), callee), args,
@@ -1445,8 +1383,7 @@ struct LiftTypedMIRPass
       if (!symName)
         continue;
 
-      StringRef signature = func.getSignature().value_or(StringRef());
-      std::string typedName = getTypedSymbol(symName.getValue(), signature);
+      std::string typedName = getTypedSymbol(symName.getValue());
       auto typedFunc = mlir::rust::createOp<rust::mir::TypedFuncOp>(
           builder, func.getLoc(), typedName, func.getRustNameAttr(),
           func.getSignatureAttr(), func.getArgCountAttr(), func.getSpanAttr());
