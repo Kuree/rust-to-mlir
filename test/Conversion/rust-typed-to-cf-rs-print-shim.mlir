@@ -11,7 +11,8 @@
 // CHECK: %[[TWO:.*]] = arith.constant 2 : i32
 // CHECK: %[[SUM:.*]] = arith.addi %[[ONE]], %[[TWO]] : i32
 // CHECK: cf.assert
-// CHECK: %[[PRINT_VALUE:.*]] = llvm.extractvalue %{{.*}}[0] : !llvm.struct<(i32, i1)>
+// CHECK: %[[PRINT_FIELD:.*]] = rust.typed.field_addr %{{.*}} {index = 0 : i64} : !rust.typed.slot<!llvm.struct<(i32, i1)>> -> <i32>
+// CHECK: %[[PRINT_VALUE:.*]] = rust.typed.load %[[PRINT_FIELD]] : !rust.typed.addr<i32> -> i32
 // CHECK: call @__rtl_println_i32(%[[PRINT_VALUE]])
 // CHECK-SAME: rust.abi = #rust.abi<c>
 // CHECK-SAME: rust.rust_name = "print_shim::__rtl_println_i32"

@@ -6,13 +6,13 @@ extern crate rustc_middle;
 extern crate rustc_public;
 
 use rustc_public::crate_def::CrateDef;
+use rustc_public::mir::alloc::GlobalAlloc;
 use rustc_public::mir::{
     AggregateKind, Mutability, Operand, Place, ProjectionElem, Rvalue, Statement, StatementKind,
     TerminatorKind,
 };
-use rustc_public::mir::alloc::GlobalAlloc;
 use rustc_public::target::{Endian, MachineInfo};
-use rustc_public::ty::{Abi, ConstantKind, RigidTy, Ty, TyKind};
+use rustc_public::ty::{Abi, Allocation, ConstantKind, RigidTy, Ty, TyConstKind, TyKind};
 use rustc_public::CrateItem;
 use std::env;
 use std::ffi::{CStr, CString};
@@ -102,6 +102,7 @@ type RustMirTypeFromRustcPublicString =
     unsafe extern "C" fn(MlirContext, MlirStringRef) -> MlirType;
 type RustTypedTupleTypeGet = unsafe extern "C" fn(MlirContext, isize, *const MlirType) -> MlirType;
 type RustTypedArrayTypeGet = unsafe extern "C" fn(MlirContext, MlirType, u64) -> MlirType;
+type RustTypedSliceTypeGet = unsafe extern "C" fn(MlirContext, MlirType) -> MlirType;
 type RustTypedRefTypeGet = unsafe extern "C" fn(MlirContext, MlirStringRef, MlirType) -> MlirType;
 type RustTypedRawPtrTypeGet =
     unsafe extern "C" fn(MlirContext, MlirStringRef, MlirType) -> MlirType;
@@ -146,6 +147,14 @@ type RustMirRvalueUnaryOpCreate = unsafe extern "C" fn(
     MlirStringRef,
     MlirOperation,
 ) -> MlirOperation;
+type RustMirRvalueCastCreate = unsafe extern "C" fn(
+    MlirLocation,
+    MlirStringRef,
+    MlirStringRef,
+    MlirOperation,
+    MlirStringRef,
+    MlirStringRef,
+) -> MlirOperation;
 type RustMirRvalueAggregateCreate = unsafe extern "C" fn(
     MlirLocation,
     MlirStringRef,
@@ -154,6 +163,7 @@ type RustMirRvalueAggregateCreate = unsafe extern "C" fn(
     *const MlirOperation,
 ) -> MlirOperation;
 type RustMirRvalueUseCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
+type RustMirRvalueLenCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
 type RustMirRvalueRefCreate = unsafe extern "C" fn(
     MlirLocation,
     MlirStringRef,
@@ -251,6 +261,7 @@ struct MlirApi {
     type_from_rustc_public_string: RustMirTypeFromRustcPublicString,
     typed_tuple_type_get: RustTypedTupleTypeGet,
     typed_array_type_get: RustTypedArrayTypeGet,
+    typed_slice_type_get: RustTypedSliceTypeGet,
     typed_ref_type_get: RustTypedRefTypeGet,
     typed_raw_ptr_type_get: RustTypedRawPtrTypeGet,
     switch_targets_attr_get: RustMirSwitchTargetsAttrGet,
@@ -269,8 +280,10 @@ struct MlirApi {
     operand_debug_create: RustMirOperandDebugCreate,
     rvalue_binary_op_create: RustMirRvalueBinaryOpCreate,
     rvalue_unary_op_create: RustMirRvalueUnaryOpCreate,
+    rvalue_cast_create: RustMirRvalueCastCreate,
     rvalue_aggregate_create: RustMirRvalueAggregateCreate,
     rvalue_use_create: RustMirRvalueUseCreate,
+    rvalue_len_create: RustMirRvalueLenCreate,
     rvalue_ref_create: RustMirRvalueRefCreate,
     rvalue_address_of_create: RustMirRvalueAddressOfCreate,
     debug_op_create: RustMirDebugOpCreate,
@@ -325,6 +338,7 @@ impl MlirApi {
                 )?,
                 typed_tuple_type_get: load_symbol(handle, "rustTypedTupleTypeGet")?,
                 typed_array_type_get: load_symbol(handle, "rustTypedArrayTypeGet")?,
+                typed_slice_type_get: load_symbol(handle, "rustTypedSliceTypeGet")?,
                 typed_ref_type_get: load_symbol(handle, "rustTypedRefTypeGet")?,
                 typed_raw_ptr_type_get: load_symbol(handle, "rustTypedRawPtrTypeGet")?,
                 switch_targets_attr_get: load_symbol(handle, "rustMirSwitchTargetsAttrGet")?,
@@ -346,8 +360,10 @@ impl MlirApi {
                 operand_debug_create: load_symbol(handle, "rustMirOperandDebugCreate")?,
                 rvalue_binary_op_create: load_symbol(handle, "rustMirRvalueBinaryOpCreate")?,
                 rvalue_unary_op_create: load_symbol(handle, "rustMirRvalueUnaryOpCreate")?,
+                rvalue_cast_create: load_symbol(handle, "rustMirRvalueCastCreate")?,
                 rvalue_aggregate_create: load_symbol(handle, "rustMirRvalueAggregateCreate")?,
                 rvalue_use_create: load_symbol(handle, "rustMirRvalueUseCreate")?,
+                rvalue_len_create: load_symbol(handle, "rustMirRvalueLenCreate")?,
                 rvalue_ref_create: load_symbol(handle, "rustMirRvalueRefCreate")?,
                 rvalue_address_of_create: load_symbol(handle, "rustMirRvalueAddressOfCreate")?,
                 debug_op_create: load_symbol(handle, "rustMirDebugOpCreate")?,
@@ -622,6 +638,9 @@ enum MirType {
         element: Box<MirType>,
         length: u64,
     },
+    Slice {
+        element: Box<MirType>,
+    },
     Ref {
         pointee: Box<MirType>,
         mutability: String,
@@ -647,6 +666,32 @@ fn raw_pointer_mutability(mutability: Mutability) -> &'static str {
 }
 
 impl MirType {
+    fn spelling(&self) -> String {
+        match self {
+            Self::Debug(spelling) => spelling.clone(),
+            Self::Tuple(elements) => {
+                let elements = elements
+                    .iter()
+                    .map(Self::spelling)
+                    .collect::<Vec<_>>()
+                    .join(", ");
+                format!("tuple({elements})")
+            }
+            Self::Array { element, length } => {
+                format!("[{}; {length}]", element.spelling())
+            }
+            Self::Slice { element } => format!("[{}]", element.spelling()),
+            Self::Ref {
+                pointee,
+                mutability,
+            } => format!("&{mutability} {}", pointee.spelling()),
+            Self::RawPtr {
+                pointee,
+                mutability,
+            } => format!("*{mutability} {}", pointee.spelling()),
+        }
+    }
+
     fn from_public(ty: Ty) -> Self {
         match ty.kind() {
             TyKind::RigidTy(RigidTy::Tuple(elements)) if elements.is_empty() => {
@@ -665,6 +710,9 @@ impl MirType {
                     length,
                 },
                 Err(_) => Self::Debug(format!("{ty:?}")),
+            },
+            TyKind::RigidTy(RigidTy::Slice(element)) => Self::Slice {
+                element: Box::new(Self::from_public(element)),
             },
             TyKind::RigidTy(RigidTy::Ref(_, pointee, mutability)) => Self::Ref {
                 pointee: Box::new(Self::from_public(pointee)),
@@ -719,20 +767,15 @@ impl MirCallMetadata {
         let (def, generic_args) = kind.fn_def()?;
         let sig = kind.fn_sig()?;
         let value = &sig.value;
-        let inputs = value
-            .inputs()
-            .iter()
-            .map(|ty| format!("{ty:?}"))
-            .collect::<Vec<_>>()
-            .join(", ");
+        let inputs = format!("{} input(s)", value.inputs().len());
 
         Some(Self {
             name: def.name().to_string(),
             def: format!("{def:?}"),
-            ty: format!("{ty:?}"),
+            ty: format!("FnDef({})", def.name()),
             generic_args: format!("{generic_args:?}"),
             inputs,
-            output: format!("{:?}", value.output()),
+            output: "output".to_string(),
             abi: normalize_abi(&value.abi),
             c_variadic: value.c_variadic,
         })
@@ -751,6 +794,13 @@ enum MirRvalue {
         op: String,
         operand: Box<MirOperand>,
     },
+    Cast {
+        kind: String,
+        cast_kind: String,
+        operand: Box<MirOperand>,
+        ty: MirType,
+        debug: String,
+    },
     Aggregate {
         kind: String,
         aggregate_kind: String,
@@ -758,6 +808,9 @@ enum MirRvalue {
     },
     Use {
         operand: Box<MirOperand>,
+    },
+    Len {
+        place: MirPlace,
     },
     Ref {
         region: String,
@@ -1011,7 +1064,7 @@ impl MirProjection {
             ProjectionElem::Deref => Self::Deref,
             ProjectionElem::Field(index, ty) => Self::Field {
                 index: *index,
-                ty: format!("{ty:?}"),
+                ty: MirType::from_public(*ty).spelling(),
             },
             ProjectionElem::Index(local) => Self::Index { local: *local },
             ProjectionElem::ConstantIndex {
@@ -1088,6 +1141,17 @@ impl MirRvalue {
                     operand: Box::new(MirOperand::from_public(operand)),
                 }
             }
+            Rvalue::Cast(cast_kind, operand, ty) => {
+                let debug = format!("{rvalue:?}");
+                let cast_debug = format!("{cast_kind:?}");
+                Self::Cast {
+                    kind: "Cast".to_string(),
+                    cast_kind: variant_name(&cast_debug).to_string(),
+                    operand: Box::new(MirOperand::from_public(operand)),
+                    ty: MirType::from_public(*ty),
+                    debug,
+                }
+            }
             Rvalue::Aggregate(kind, operands) => Self::Aggregate {
                 kind: "Aggregate".to_string(),
                 aggregate_kind: aggregate_kind_name(kind).to_string(),
@@ -1095,6 +1159,9 @@ impl MirRvalue {
             },
             Rvalue::Use(operand) => Self::Use {
                 operand: Box::new(MirOperand::from_public(operand)),
+            },
+            Rvalue::Len(place) => Self::Len {
+                place: MirPlace::from_public(place),
             },
             Rvalue::Ref(region, borrow_kind, place) => {
                 let debug = format!("{rvalue:?}");
@@ -1463,6 +1530,10 @@ impl MlirEmitter {
                 let element_type = self.type_from_mir(element);
                 unsafe { (self.api.typed_array_type_get)(self.context, element_type, *length) }
             }
+            MirType::Slice { element } => {
+                let element_type = self.type_from_mir(element);
+                unsafe { (self.api.typed_slice_type_get)(self.context, element_type) }
+            }
             MirType::Ref {
                 pointee,
                 mutability,
@@ -1628,6 +1699,26 @@ impl MlirEmitter {
                     )
                 }
             }
+            MirRvalue::Cast {
+                kind,
+                cast_kind,
+                operand,
+                ty,
+                debug,
+            } => {
+                let operand = self.operand_op(operand, span);
+                let ty = ty.spelling();
+                unsafe {
+                    (self.api.rvalue_cast_create)(
+                        self.location(span),
+                        mlir_string(kind),
+                        mlir_string(cast_kind),
+                        operand,
+                        mlir_string(&ty),
+                        mlir_string(debug),
+                    )
+                }
+            }
             MirRvalue::Aggregate {
                 kind,
                 aggregate_kind,
@@ -1650,6 +1741,10 @@ impl MlirEmitter {
             MirRvalue::Use { operand } => {
                 let operand = self.operand_op(operand, span);
                 unsafe { (self.api.rvalue_use_create)(self.location(span), operand) }
+            }
+            MirRvalue::Len { place } => {
+                let place = self.place_op(place, span);
+                unsafe { (self.api.rvalue_len_create)(self.location(span), place) }
             }
             MirRvalue::Ref {
                 region,
@@ -1786,12 +1881,7 @@ fn span_string<T: std::fmt::Debug>(span: &T) -> String {
     format!("{span:?}")
 }
 
-fn constant_scalar_text(constant: &rustc_public::mir::ConstOperand) -> Option<String> {
-    let ConstantKind::Allocated(allocation) = constant.const_.kind() else {
-        return None;
-    };
-
-    let ty = format!("{:?}", constant.const_.ty());
+fn scalar_text_from_allocation(ty: &str, allocation: &Allocation) -> Option<String> {
     if ty.contains("RigidTy(Bool)") {
         return allocation.read_bool().ok().map(|value| value.to_string());
     }
@@ -1803,6 +1893,23 @@ fn constant_scalar_text(constant: &rustc_public::mir::ConstOperand) -> Option<St
     }
 
     None
+}
+
+fn constant_scalar_text(constant: &rustc_public::mir::ConstOperand) -> Option<String> {
+    match constant.const_.kind() {
+        ConstantKind::Allocated(allocation) => {
+            let ty = format!("{:?}", constant.const_.ty());
+            scalar_text_from_allocation(&ty, &allocation)
+        }
+        ConstantKind::Ty(ty_const) => {
+            let TyConstKind::Value(ty, allocation) = ty_const.kind() else {
+                return None;
+            };
+            let ty = format!("{ty:?}");
+            scalar_text_from_allocation(&ty, allocation)
+        }
+        _ => None,
+    }
 }
 
 fn constant_string_text(constant: &rustc_public::mir::ConstOperand) -> Option<String> {

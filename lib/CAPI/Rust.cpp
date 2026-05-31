@@ -453,6 +453,11 @@ MlirType rustTypedArrayTypeGet(MlirContext context, MlirType elementType,
                                            length));
 }
 
+MlirType rustTypedSliceTypeGet(MlirContext context, MlirType elementType) {
+  return wrap(rustmir::TypedSliceType::get(unwrap(context),
+                                           unwrap(elementType)));
+}
+
 MlirType rustTypedRefTypeGet(MlirContext context, MlirStringRef mutability,
                              MlirType pointeeType) {
   return wrap(rustmir::TypedRefType::get(unwrap(context), unwrap(mutability),
@@ -650,6 +655,24 @@ MlirOperation rustMirRvalueUnaryOpCreate(MlirLocation location,
   return wrapped;
 }
 
+MlirOperation rustMirRvalueCastCreate(MlirLocation location,
+                                      MlirStringRef kind,
+                                      MlirStringRef castKind,
+                                      MlirOperation operand,
+                                      MlirStringRef type,
+                                      MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  OperationState state(unwrap(location), "rust.mir.cast");
+  addStringAttr(context, state, "mir_kind", kind);
+  addEnumAttr<rustmir::RustCastKind, rustmir::RustCastKindAttr>(
+      context, state, "cast_kind", castKind, rustmir::symbolizeRustCastKind);
+  addStringAttr(context, state, "ty", type);
+  addStringAttr(context, state, "debug", debug);
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), operand);
+  return wrapped;
+}
+
 MlirOperation rustMirRvalueAggregateCreate(MlirLocation location,
                                            MlirStringRef kind,
                                            MlirStringRef aggregateKind,
@@ -674,6 +697,17 @@ MlirOperation rustMirRvalueUseCreate(MlirLocation location,
   state.addAttribute("mir_kind", builder.getStringAttr("Use"));
   MlirOperation wrapped = createRegionOperation(state);
   appendOwnedChild(unwrap(wrapped), operand);
+  return wrapped;
+}
+
+MlirOperation rustMirRvalueLenCreate(MlirLocation location,
+                                     MlirOperation place) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.len");
+  state.addAttribute("mir_kind", builder.getStringAttr("Len"));
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), place);
   return wrapped;
 }
 

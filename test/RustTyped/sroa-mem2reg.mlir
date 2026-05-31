@@ -6,8 +6,8 @@ module {
     %a = rust.typed.const {debug = "11"} : !rust.mir.int<"i32">
     %b = rust.typed.const {debug = "22"} : !rust.mir.int<"i64">
     %tuple = rust.typed.aggregate %a, %b : !rust.mir.int<"i32">, !rust.mir.int<"i64"> -> !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>
-    rust.typed.store %tuple, %slot : !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>, <!rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>>
-    %loaded = rust.typed.load %slot : <!rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>> -> !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>
+    rust.typed.store %tuple, %slot : !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>, !rust.typed.slot<!rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>>
+    %loaded = rust.typed.load %slot : !rust.typed.slot<!rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>> -> !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>
     rust.typed.return %loaded : !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>
   }
 }

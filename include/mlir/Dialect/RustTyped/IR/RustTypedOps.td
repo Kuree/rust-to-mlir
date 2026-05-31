@@ -13,6 +13,13 @@ include "mlir/IR/SymbolInterfaces.td"
 include "mlir/Interfaces/MemorySlotInterfaces.td"
 include "mlir/Interfaces/SideEffectInterfaces.td"
 
+def RustTyped_AddressLikeType : AnyTypeOf<[
+  RustTyped_SlotType,
+  RustTyped_AddrType,
+  RustTyped_RefType,
+  RustTyped_RawPtrType
+]>;
+
 def RustTyped_TypedFuncOp : RustTyped_Op<"func",
     [IsolatedFromAbove, NoTerminator, SingleBlock, Symbol]> {
   let summary = "Typed Rust MIR function body";
@@ -49,8 +56,8 @@ def RustTyped_LocalSlotOp : RustTyped_Op<"local_slot",
 def RustTyped_LoadOp : RustTyped_Op<"load",
     [DeclareOpInterfaceMethods<PromotableMemOpInterface>,
      DeclareOpInterfaceMethods<DestructurableAccessorOpInterface>]> {
-  let summary = "Load from a typed Rust local slot";
-  let arguments = (ins RustTyped_SlotType:$slot);
+  let summary = "Load from a typed Rust place address";
+  let arguments = (ins RustTyped_AddressLikeType:$slot);
   let results = (outs AnyType:$value);
   let assemblyFormat = "$slot attr-dict `:` type($slot) `->` type($value)";
   let hasVerifier = 1;
@@ -59,8 +66,8 @@ def RustTyped_LoadOp : RustTyped_Op<"load",
 def RustTyped_StoreOp : RustTyped_Op<"store",
     [DeclareOpInterfaceMethods<PromotableMemOpInterface>,
      DeclareOpInterfaceMethods<DestructurableAccessorOpInterface>]> {
-  let summary = "Store to a typed Rust local slot";
-  let arguments = (ins AnyType:$value, RustTyped_SlotType:$slot);
+  let summary = "Store to a typed Rust place address";
+  let arguments = (ins AnyType:$value, RustTyped_AddressLikeType:$slot);
   let assemblyFormat = "$value `,` $slot attr-dict `:` type($value) `,` type($slot)";
   let hasVerifier = 1;
 }
@@ -160,6 +167,45 @@ def RustTyped_FieldAddrOp : RustTyped_Op<"field_addr"> {
                        OptionalAttr<StrAttr>:$span);
   let results = (outs RustTyped_AddrType:$address);
   let assemblyFormat = "$base attr-dict `:` type($base) `->` type($address)";
+  let hasVerifier = 1;
+}
+
+def RustTyped_IndexAddrOp : RustTyped_Op<"index_addr"> {
+  let summary = "Compute the address of a typed Rust dynamic array or slice element";
+  let arguments = (ins AnyType:$base, AnyType:$index,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs RustTyped_AddrType:$address);
+  let assemblyFormat = "$base `[` $index `]` attr-dict `:` type($base) `,` type($index) `->` type($address)";
+  let hasVerifier = 1;
+}
+
+def RustTyped_SliceFromArrayOp : RustTyped_Op<"slice_from_array"> {
+  let summary = "Coerce a typed Rust array pointer/reference to a slice fat pointer";
+  let arguments = (ins AnyType:$source,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
+  let hasVerifier = 1;
+}
+
+def RustTyped_PtrMetadataOp : RustTyped_Op<"ptr_metadata"> {
+  let summary = "Extract Rust pointer metadata";
+  let arguments = (ins AnyType:$source,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs AnyType:$metadata);
+  let assemblyFormat = "$source attr-dict `:` type($source) `->` type($metadata)";
+  let hasVerifier = 1;
+}
+
+def RustTyped_SubsliceOp : RustTyped_Op<"subslice"> {
+  let summary = "Compute a typed Rust subslice fat pointer";
+  let arguments = (ins AnyType:$source,
+                       I64Attr:$from_index,
+                       I64Attr:$to_index,
+                       BoolAttr:$from_end,
+                       OptionalAttr<StrAttr>:$span);
+  let results = (outs AnyType:$result);
+  let assemblyFormat = "$source attr-dict `:` type($source) `->` type($result)";
   let hasVerifier = 1;
 }
 

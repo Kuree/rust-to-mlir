@@ -6,8 +6,8 @@ module {
     %a = rust.typed.const {debug = "11"} : !rust.mir.int<"i32">
     %b = rust.typed.const {debug = "22"} : !rust.mir.int<"i32">
     %array = rust.typed.aggregate %a, %b : !rust.mir.int<"i32">, !rust.mir.int<"i32"> -> !rust.typed.array<!rust.mir.int<"i32">, 2>
-    rust.typed.store %array, %slot : !rust.typed.array<!rust.mir.int<"i32">, 2>, <!rust.typed.array<!rust.mir.int<"i32">, 2>>
-    %loaded = rust.typed.load %slot : <!rust.typed.array<!rust.mir.int<"i32">, 2>> -> !rust.typed.array<!rust.mir.int<"i32">, 2>
+    rust.typed.store %array, %slot : !rust.typed.array<!rust.mir.int<"i32">, 2>, !rust.typed.slot<!rust.typed.array<!rust.mir.int<"i32">, 2>>
+    %loaded = rust.typed.load %slot : !rust.typed.slot<!rust.typed.array<!rust.mir.int<"i32">, 2>> -> !rust.typed.array<!rust.mir.int<"i32">, 2>
     rust.typed.return %loaded : !rust.typed.array<!rust.mir.int<"i32">, 2>
   }
 }

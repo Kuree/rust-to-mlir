@@ -20,6 +20,7 @@
 #include "llvm/Support/InitLLVM.h"
 #include "llvm/Support/MemoryBuffer.h"
 #include "llvm/Support/Path.h"
+#include "llvm/Support/Process.h"
 #include "llvm/Support/Program.h"
 #include "llvm/Support/SourceMgr.h"
 #include "llvm/Support/TargetSelect.h"
@@ -74,6 +75,10 @@ llvm::StringRef getRuntimeLibraryFilename() {
 #else
   return "librust_to_llvm_runtime.so";
 #endif
+}
+
+llvm::StringRef getRuntimeLibraryEnvVar() {
+  return "RUST_TO_LLVM_RUNTIME_LIBRARY";
 }
 
 bool isRustStdSharedLibrary(llvm::StringRef filename) {
@@ -221,36 +226,86 @@ bool addDiscoveredRustStdSharedLibrary(std::vector<std::string> &libraries) {
   return true;
 }
 
-std::string getDefaultRuntimeLibraryPath(const char *argv0) {
+void addUniquePath(std::vector<std::string> &paths, llvm::StringRef path) {
+  if (path.empty())
+    return;
+  if (std::find(paths.begin(), paths.end(), path) == paths.end())
+    paths.push_back(path.str());
+}
+
+void addExecutableRelativeRuntimeCandidates(const char *argv0,
+                                            std::vector<std::string> &paths) {
   std::string executable =
       llvm::sys::fs::getMainExecutable(argv0, reinterpret_cast<void *>(
-                                                  &getDefaultRuntimeLibraryPath));
+                                                  &getRuntimeLibraryFilename));
   if (executable.empty())
-    return getRuntimeLibraryFilename().str();
+    return;
 
-  llvm::SmallString<256> path(executable);
-  llvm::sys::path::remove_filename(path);
-  llvm::sys::path::append(path, "..", "lib", getRuntimeLibraryFilename());
-  return path.str().str();
+  llvm::SmallString<256> executableDir(executable);
+  llvm::sys::path::remove_filename(executableDir);
+
+  llvm::SmallString<256> colocated(executableDir);
+  llvm::sys::path::append(colocated, getRuntimeLibraryFilename());
+  addUniquePath(paths, colocated);
+
+  llvm::SmallString<256> siblingLibDir(executableDir);
+  llvm::sys::path::append(siblingLibDir, "..", "lib",
+                          getRuntimeLibraryFilename());
+  addUniquePath(paths, siblingLibDir);
+
+  llvm::SmallString<256> siblingLib64Dir(executableDir);
+  llvm::sys::path::append(siblingLib64Dir, "..", "lib64",
+                          getRuntimeLibraryFilename());
+  addUniquePath(paths, siblingLib64Dir);
+}
+
+std::optional<std::string>
+findRuntimeLibrary(const char *argv0, std::vector<std::string> &searchedPaths) {
+  if (!runtimeLibrary.empty()) {
+    addUniquePath(searchedPaths, runtimeLibrary);
+    if (llvm::sys::fs::is_regular_file(runtimeLibrary))
+      return runtimeLibrary;
+    return std::nullopt;
+  }
+
+  if (std::optional<std::string> envRuntimeLibrary =
+          llvm::sys::Process::GetEnv(getRuntimeLibraryEnvVar())) {
+    addUniquePath(searchedPaths, *envRuntimeLibrary);
+    if (llvm::sys::fs::is_regular_file(*envRuntimeLibrary))
+      return *envRuntimeLibrary;
+  }
+
+  addExecutableRelativeRuntimeCandidates(argv0, searchedPaths);
+  addUniquePath(searchedPaths, getRuntimeLibraryFilename());
+
+  for (const std::string &path : searchedPaths) {
+    if (llvm::sys::fs::is_regular_file(path))
+      return path;
+  }
+  return std::nullopt;
 }
 
 bool addRuntimeLibrary(const char *argv0, std::vector<std::string> &libraries) {
-  std::string path =
-      runtimeLibrary.empty() ? getDefaultRuntimeLibraryPath(argv0) : runtimeLibrary;
-  if (!llvm::sys::fs::is_regular_file(path)) {
-    llvm::errs() << "error: RustToLLVM runtime shim not found: " << path
-                 << "\n";
+  std::vector<std::string> searchedPaths;
+  std::optional<std::string> path = findRuntimeLibrary(argv0, searchedPaths);
+  if (!path) {
+    llvm::errs() << "error: RustToLLVM runtime shim not found\n";
+    llvm::errs() << "searched:\n";
+    for (const std::string &searchedPath : searchedPaths)
+      llvm::errs() << "  " << searchedPath << "\n";
+    llvm::errs() << "pass --runtime-library=PATH or set "
+                 << getRuntimeLibraryEnvVar() << " to override\n";
     return false;
   }
 
-  if (std::find(libraries.begin(), libraries.end(), path) != libraries.end())
+  if (std::find(libraries.begin(), libraries.end(), *path) != libraries.end())
     return true;
 
   auto insertIt = libraries.begin();
   if (insertIt != libraries.end() &&
       isRustStdSharedLibrary(llvm::sys::path::filename(*insertIt)))
     ++insertIt;
-  libraries.insert(insertIt, path);
+  libraries.insert(insertIt, *path);
   return true;
 }
 

@@ -111,7 +111,58 @@ Type getAddressElementType(Type addressType) {
     return slotType.getElementType();
   if (auto addrType = dyn_cast<TypedAddrType>(addressType))
     return addrType.getElementType();
+  if (auto refType = dyn_cast<TypedRefType>(addressType))
+    return refType.getPointeeType();
+  if (auto rawPtrType = dyn_cast<TypedRawPtrType>(addressType))
+    return rawPtrType.getPointeeType();
   return {};
+}
+
+Type getDynamicallyIndexedElementType(Type aggregateType) {
+  if (auto arrayType = dyn_cast<TypedArrayType>(aggregateType))
+    return arrayType.getElementType();
+  if (auto sliceType = dyn_cast<TypedSliceType>(aggregateType))
+    return sliceType.getElementType();
+  if (auto arrayType = dyn_cast<LLVM::LLVMArrayType>(aggregateType))
+    return arrayType.getElementType();
+  return {};
+}
+
+bool isIntegerLike(Type type) {
+  return isa<IntType, IndexType, IntegerType>(type);
+}
+
+Type getPointerPointeeType(Type type) {
+  if (auto refType = dyn_cast<TypedRefType>(type))
+    return refType.getPointeeType();
+  if (auto rawPtrType = dyn_cast<TypedRawPtrType>(type))
+    return rawPtrType.getPointeeType();
+  return {};
+}
+
+bool isPointerToSlice(Type type) {
+  return isa_and_nonnull<TypedSliceType>(getPointerPointeeType(type));
+}
+
+bool isPointerToArray(Type type) {
+  return isa_and_nonnull<TypedArrayType, LLVM::LLVMArrayType>(
+      getPointerPointeeType(type));
+}
+
+Type getArrayElementType(Type type) {
+  if (auto arrayType = dyn_cast<TypedArrayType>(type))
+    return arrayType.getElementType();
+  if (auto arrayType = dyn_cast<LLVM::LLVMArrayType>(type))
+    return arrayType.getElementType();
+  return {};
+}
+
+bool haveMatchingPointerKind(Type lhs, Type rhs) {
+  if (isa<TypedRefType>(lhs) && isa<TypedRefType>(rhs))
+    return true;
+  if (isa<TypedRawPtrType>(lhs) && isa<TypedRawPtrType>(rhs))
+    return true;
+  return false;
 }
 
 Value createTypedLoad(Location loc, OpBuilder &builder,
@@ -127,18 +178,24 @@ void createTypedStore(Location loc, OpBuilder &builder, Value value,
 } // namespace
 
 LogicalResult LoadOp::verify() {
-  SlotType slotType = getSlot().getType();
-  if (getValue().getType() != slotType.getElementType())
-    return emitOpError("result type must match slot element type");
+  Type elementType = getAddressElementType(getSlot().getType());
+  if (!elementType)
+    return emitOpError("operand must be a typed Rust local slot, place "
+                       "address, reference, or raw pointer");
+  if (getValue().getType() != elementType)
+    return emitOpError("result type must match address element type");
   return success();
 }
 
 LogicalResult StoreOp::verify() {
-  SlotType slotType = getSlot().getType();
+  Type elementType = getAddressElementType(getSlot().getType());
+  if (!elementType)
+    return emitOpError("operand must be a typed Rust local slot, place "
+                       "address, reference, or raw pointer");
   if (getValue() == getSlot())
-    return emitOpError("cannot store a slot into itself");
-  if (getValue().getType() != slotType.getElementType())
-    return emitOpError("value type must match slot element type");
+    return emitOpError("cannot store an address into itself");
+  if (getValue().getType() != elementType)
+    return emitOpError("value type must match address element type");
   return success();
 }
 
@@ -155,6 +212,71 @@ LogicalResult FieldAddrOp::verify() {
            << getIndex();
   if (fieldType != resultType.getElementType())
     return emitOpError("result element type must match projected field type");
+  return success();
+}
+
+LogicalResult IndexAddrOp::verify() {
+  Type baseElementType = getAddressElementType(getBase().getType());
+  if (!baseElementType)
+    return emitOpError("base must be a typed Rust local slot, place address, "
+                       "reference, or raw pointer");
+
+  TypedAddrType resultType = getAddress().getType();
+  Type elementType = getDynamicallyIndexedElementType(baseElementType);
+  if (!elementType)
+    return emitOpError("base element type is not dynamically indexable");
+  if (elementType != resultType.getElementType())
+    return emitOpError("result element type must match indexed element type");
+  if (!isIntegerLike(getIndex().getType()))
+    return emitOpError("index must have an integer-like type");
+  return success();
+}
+
+LogicalResult SliceFromArrayOp::verify() {
+  Type sourceType = getSource().getType();
+  Type resultType = getResult().getType();
+  if (!haveMatchingPointerKind(sourceType, resultType))
+    return emitOpError("source and result must both be typed references or "
+                       "both be typed raw pointers");
+
+  Type arrayElementType = getArrayElementType(getPointerPointeeType(sourceType));
+  auto sliceType = dyn_cast_or_null<TypedSliceType>(
+      getPointerPointeeType(resultType));
+  if (!arrayElementType)
+    return emitOpError("source must point to a typed array");
+  if (!sliceType)
+    return emitOpError("result must point to a typed slice");
+  if (arrayElementType != sliceType.getElementType())
+    return emitOpError("array element type must match slice element type");
+  return success();
+}
+
+LogicalResult PtrMetadataOp::verify() {
+  Type sourceType = getSource().getType();
+  if (!isPointerToSlice(sourceType) && !isPointerToArray(sourceType))
+    return emitOpError("source must be a typed array or slice pointer");
+  if (!isIntegerLike(getMetadata().getType()))
+    return emitOpError("metadata result must have an integer-like type");
+  return success();
+}
+
+LogicalResult SubsliceOp::verify() {
+  Type sourceElementType = getAddressElementType(getSource().getType());
+  if (!sourceElementType)
+    return emitOpError("source must be a typed Rust local slot, place address, "
+                       "reference, or raw pointer");
+  Type sourceSliceElementType =
+      getDynamicallyIndexedElementType(sourceElementType);
+  if (!sourceSliceElementType)
+    return emitOpError("source element type is not sliceable");
+
+  auto resultSliceType = dyn_cast_or_null<TypedSliceType>(
+      getPointerPointeeType(getResult().getType()));
+  if (!resultSliceType)
+    return emitOpError("result type must be a typed Rust slice pointer");
+  if (sourceSliceElementType != resultSliceType.getElementType())
+    return emitOpError("result slice element type must match source element "
+                       "type");
   return success();
 }
 

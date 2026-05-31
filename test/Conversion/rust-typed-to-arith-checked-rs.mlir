@@ -14,11 +14,14 @@
 // CHECK: %[[UNDEF:.*]] = llvm.mlir.undef : !llvm.struct<(i32, i1)>
 // CHECK: %[[WITH_VALUE:.*]] = llvm.insertvalue %[[VALUE]], %[[UNDEF]][0] : !llvm.struct<(i32, i1)>
 // CHECK: %[[CHECKED:.*]] = llvm.insertvalue %[[OVERFLOW]], %[[WITH_VALUE]][1] : !llvm.struct<(i32, i1)>
-// CHECK: %[[ASSERT_OVERFLOW:.*]] = llvm.extractvalue %[[CHECKED]][1] : !llvm.struct<(i32, i1)>
+// CHECK: rust.typed.store %[[CHECKED]], %[[CHECKED_SLOT:.*]] : !llvm.struct<(i32, i1)>, !rust.typed.slot<!llvm.struct<(i32, i1)>>
+// CHECK: %[[ASSERT_FIELD:.*]] = rust.typed.field_addr %[[CHECKED_SLOT]] {index = 1 : i64} : !rust.typed.slot<!llvm.struct<(i32, i1)>> -> <i1>
+// CHECK: %[[ASSERT_OVERFLOW:.*]] = rust.typed.load %[[ASSERT_FIELD]] : !rust.typed.addr<i1> -> i1
 // CHECK: %[[ASSERT_TRUE:.*]] = arith.constant true
 // CHECK: %[[ASSERT_OK:.*]] = arith.xori %[[ASSERT_OVERFLOW]], %[[ASSERT_TRUE]] : i1
 // CHECK: cf.assert %[[ASSERT_OK]], "attempt to add with overflow"
-// CHECK: %[[RETURN_VALUE:.*]] = llvm.extractvalue %[[CHECKED]][0] : !llvm.struct<(i32, i1)>
+// CHECK: %[[RETURN_FIELD:.*]] = rust.typed.field_addr %[[CHECKED_SLOT]] {index = 0 : i64} : !rust.typed.slot<!llvm.struct<(i32, i1)>> -> <i32>
+// CHECK: %[[RETURN_VALUE:.*]] = rust.typed.load %[[RETURN_FIELD]] : !rust.typed.addr<i32> -> i32
 // CHECK: return %[[RETURN_VALUE]] : i32
 // CHECK-NOT: rust.typed.aggregate
-// CHECK-NOT: rust.typed.field
+// CHECK-NOT: rust.typed.field %

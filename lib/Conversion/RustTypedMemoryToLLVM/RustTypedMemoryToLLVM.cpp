@@ -7,6 +7,7 @@
 #include "mlir/Conversion/RustTypedMemoryToLLVM/RustTypedMemoryToLLVM.h"
 
 #include "RustToLLVM/Support/OpCreateCompat.h"
+#include "mlir/Dialect/Arith/IR/Arith.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/Func/Transforms/FuncConversions.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -44,10 +45,14 @@ public:
     addConversion([this](rustmir::TypedAddrType) -> Type {
       return LLVM::LLVMPointerType::get(this->context);
     });
-    addConversion([this](rustmir::TypedRefType) -> Type {
+    addConversion([this](rustmir::TypedRefType type) -> Type {
+      if (isa<rustmir::TypedSliceType>(type.getPointeeType()))
+        return getFatPointerType(this->context);
       return LLVM::LLVMPointerType::get(this->context);
     });
-    addConversion([this](rustmir::TypedRawPtrType) -> Type {
+    addConversion([this](rustmir::TypedRawPtrType type) -> Type {
+      if (isa<rustmir::TypedSliceType>(type.getPointeeType()))
+        return getFatPointerType(this->context);
       return LLVM::LLVMPointerType::get(this->context);
     });
     addConversion([this](rustmir::TypedTupleType type) -> Type {
@@ -70,6 +75,12 @@ public:
     });
   }
 
+  static Type getFatPointerType(MLIRContext *context) {
+    return LLVM::LLVMStructType::getLiteral(
+        context, {LLVM::LLVMPointerType::get(context),
+                  IntegerType::get(context, 64)});
+  }
+
 private:
   MLIRContext *context;
 };
@@ -89,12 +100,73 @@ Type getAddressElementType(Type addressType) {
     return slotType.getElementType();
   if (auto addrType = dyn_cast<rustmir::TypedAddrType>(addressType))
     return addrType.getElementType();
+  if (auto refType = dyn_cast<rustmir::TypedRefType>(addressType))
+    return refType.getPointeeType();
+  if (auto rawPtrType = dyn_cast<rustmir::TypedRawPtrType>(addressType))
+    return rawPtrType.getPointeeType();
   return {};
+}
+
+Type getPointerPointeeType(Type type) {
+  if (auto refType = dyn_cast<rustmir::TypedRefType>(type))
+    return refType.getPointeeType();
+  if (auto rawPtrType = dyn_cast<rustmir::TypedRawPtrType>(type))
+    return rawPtrType.getPointeeType();
+  return {};
+}
+
+Type getDynamicallyIndexedElementType(Type aggregateType) {
+  if (auto arrayType = dyn_cast<rustmir::TypedArrayType>(aggregateType))
+    return arrayType.getElementType();
+  if (auto sliceType = dyn_cast<rustmir::TypedSliceType>(aggregateType))
+    return sliceType.getElementType();
+  if (auto arrayType = dyn_cast<LLVM::LLVMArrayType>(aggregateType))
+    return arrayType.getElementType();
+  return {};
+}
+
+std::optional<uint64_t> getIndexableLength(Type aggregateType) {
+  if (auto arrayType = dyn_cast<rustmir::TypedArrayType>(aggregateType))
+    return arrayType.getLength();
+  if (auto arrayType = dyn_cast<LLVM::LLVMArrayType>(aggregateType))
+    return arrayType.getNumElements();
+  return std::nullopt;
 }
 
 Value createI64One(OpBuilder &builder, Location loc) {
   return mlir::rust::createOp<LLVM::ConstantOp>(builder, loc,
                                                 builder.getI64Type(), 1)
+      .getRes();
+}
+
+Value createI64Constant(OpBuilder &builder, Location loc, int64_t value) {
+  return mlir::rust::createOp<LLVM::ConstantOp>(builder, loc,
+                                                builder.getI64Type(), value)
+      .getRes();
+}
+
+Value extractFatPointerData(OpBuilder &builder, Location loc, Value fatPtr) {
+  return mlir::rust::createOp<LLVM::ExtractValueOp>(
+             builder, loc, LLVM::LLVMPointerType::get(builder.getContext()),
+             fatPtr, ArrayRef<int64_t>(0))
+      .getRes();
+}
+
+Value extractFatPointerLen(OpBuilder &builder, Location loc, Value fatPtr) {
+  return mlir::rust::createOp<LLVM::ExtractValueOp>(
+             builder, loc, builder.getI64Type(), fatPtr, ArrayRef<int64_t>(1))
+      .getRes();
+}
+
+Value buildFatPointer(OpBuilder &builder, Location loc, Type fatPtrType,
+                      Value data, Value len) {
+  Value fatPtr =
+      mlir::rust::createOp<LLVM::UndefOp>(builder, loc, fatPtrType).getRes();
+  fatPtr = mlir::rust::createOp<LLVM::InsertValueOp>(
+               builder, loc, fatPtr, data, ArrayRef<int64_t>(0))
+               .getRes();
+  return mlir::rust::createOp<LLVM::InsertValueOp>(
+             builder, loc, fatPtr, len, ArrayRef<int64_t>(1))
       .getRes();
 }
 
@@ -276,6 +348,186 @@ struct FieldAddrOpConversion
   }
 };
 
+struct IndexAddrOpConversion : public OpConversionPattern<rustmir::IndexAddrOp> {
+  using OpConversionPattern<rustmir::IndexAddrOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::IndexAddrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type baseElementType = getAddressElementType(op.getBase().getType());
+    Type resultType =
+        getTypeConverter()->convertType(op.getAddress().getType());
+    if (!baseElementType || !resultType)
+      return failure();
+
+    if (auto sliceType = dyn_cast<rustmir::TypedSliceType>(baseElementType)) {
+      Type convertedElementType =
+          getTypeConverter()->convertType(sliceType.getElementType());
+      if (!convertedElementType)
+        return failure();
+      Value data =
+          extractFatPointerData(rewriter, op.getLoc(), adaptor.getBase());
+      SmallVector<LLVM::GEPArg> indices = {LLVM::GEPArg(adaptor.getIndex())};
+      Value gep = mlir::rust::createOp<LLVM::GEPOp>(
+                      rewriter, op.getLoc(), resultType, convertedElementType,
+                      data, indices)
+                      .getRes();
+      rewriter.replaceOp(op, gep);
+      return success();
+    }
+
+    Type convertedBaseElementType =
+        getTypeConverter()->convertType(baseElementType);
+    if (!convertedBaseElementType)
+      return failure();
+    if (!getDynamicallyIndexedElementType(convertedBaseElementType))
+      return op.emitError("base element type is not dynamically indexable");
+
+    SmallVector<LLVM::GEPArg> indices = {LLVM::GEPArg(0),
+                                         LLVM::GEPArg(adaptor.getIndex())};
+    Value gep = mlir::rust::createOp<LLVM::GEPOp>(
+                    rewriter, op.getLoc(), resultType, convertedBaseElementType,
+                    adaptor.getBase(), indices)
+                    .getRes();
+    rewriter.replaceOp(op, gep);
+    return success();
+  }
+};
+
+struct SliceFromArrayOpConversion
+    : public OpConversionPattern<rustmir::SliceFromArrayOp> {
+  using OpConversionPattern<rustmir::SliceFromArrayOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::SliceFromArrayOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    Type sourceArrayType = getPointerPointeeType(op.getSource().getType());
+    std::optional<uint64_t> sourceLength = getIndexableLength(sourceArrayType);
+    if (!resultType || !sourceLength)
+      return failure();
+
+    Type convertedArrayType = getTypeConverter()->convertType(sourceArrayType);
+    if (!convertedArrayType)
+      return failure();
+
+    Value data = mlir::rust::createOp<LLVM::GEPOp>(
+                     rewriter, op.getLoc(),
+                     LLVM::LLVMPointerType::get(op.getContext()),
+                     convertedArrayType, adaptor.getSource(),
+                     SmallVector<LLVM::GEPArg>{LLVM::GEPArg(0),
+                                               LLVM::GEPArg(0)})
+                     .getRes();
+    Value len = createI64Constant(rewriter, op.getLoc(),
+                                  static_cast<int64_t>(*sourceLength));
+    Value fatPtr = buildFatPointer(rewriter, op.getLoc(), resultType, data, len);
+    rewriter.replaceOp(op, fatPtr);
+    return success();
+  }
+};
+
+struct PtrMetadataOpConversion
+    : public OpConversionPattern<rustmir::PtrMetadataOp> {
+  using OpConversionPattern<rustmir::PtrMetadataOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::PtrMetadataOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType =
+        getTypeConverter()->convertType(op.getMetadata().getType());
+    if (!resultType)
+      return failure();
+
+    Type pointeeType = getPointerPointeeType(op.getSource().getType());
+    if (isa_and_nonnull<rustmir::TypedSliceType>(pointeeType)) {
+      Value len = extractFatPointerLen(rewriter, op.getLoc(), adaptor.getSource());
+      if (len.getType() != resultType)
+        return op.emitError("slice metadata type does not match result type");
+      rewriter.replaceOp(op, len);
+      return success();
+    }
+
+    if (std::optional<uint64_t> length = getIndexableLength(pointeeType)) {
+      Value len =
+          createI64Constant(rewriter, op.getLoc(), static_cast<int64_t>(*length));
+      if (len.getType() != resultType)
+        return op.emitError("array metadata type does not match result type");
+      rewriter.replaceOp(op, len);
+      return success();
+    }
+
+    return failure();
+  }
+};
+
+struct SubsliceOpConversion : public OpConversionPattern<rustmir::SubsliceOp> {
+  using OpConversionPattern<rustmir::SubsliceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::SubsliceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    Type sourceElementType = getAddressElementType(op.getSource().getType());
+    Type elementType = getDynamicallyIndexedElementType(sourceElementType);
+    Type convertedElementType = getTypeConverter()->convertType(elementType);
+    if (!resultType || !sourceElementType || !elementType ||
+        !convertedElementType)
+      return failure();
+
+    int64_t from = op.getFromIndex();
+    int64_t to = op.getToIndex();
+    Value fromValue = createI64Constant(rewriter, op.getLoc(), from);
+    Value data;
+    Value sourceLen;
+
+    if (isa<rustmir::TypedSliceType>(sourceElementType)) {
+      data = extractFatPointerData(rewriter, op.getLoc(), adaptor.getSource());
+      sourceLen = extractFatPointerLen(rewriter, op.getLoc(), adaptor.getSource());
+    } else {
+      Type convertedSourceElementType =
+          getTypeConverter()->convertType(sourceElementType);
+      if (!convertedSourceElementType)
+        return failure();
+      data = mlir::rust::createOp<LLVM::GEPOp>(
+                 rewriter, op.getLoc(), LLVM::LLVMPointerType::get(op.getContext()),
+                 convertedSourceElementType, adaptor.getSource(),
+                 SmallVector<LLVM::GEPArg>{LLVM::GEPArg(0),
+                                           LLVM::GEPArg(fromValue)})
+                 .getRes();
+      std::optional<uint64_t> length = getIndexableLength(sourceElementType);
+      if (!length)
+        return failure();
+      sourceLen =
+          createI64Constant(rewriter, op.getLoc(), static_cast<int64_t>(*length));
+    }
+
+    if (isa<rustmir::TypedSliceType>(sourceElementType)) {
+      data = mlir::rust::createOp<LLVM::GEPOp>(
+                 rewriter, op.getLoc(), LLVM::LLVMPointerType::get(op.getContext()),
+                 convertedElementType, data,
+                 SmallVector<LLVM::GEPArg>{LLVM::GEPArg(fromValue)})
+                 .getRes();
+    }
+
+    Value len;
+    if (op.getFromEnd()) {
+      Value afterFrom = mlir::rust::createOp<arith::SubIOp>(
+                            rewriter, op.getLoc(), sourceLen, fromValue)
+                            .getResult();
+      Value toValue = createI64Constant(rewriter, op.getLoc(), to);
+      len = mlir::rust::createOp<arith::SubIOp>(rewriter, op.getLoc(),
+                                                afterFrom, toValue)
+                .getResult();
+    } else {
+      len = createI64Constant(rewriter, op.getLoc(), to - from);
+    }
+
+    Value fatPtr = buildFatPointer(rewriter, op.getLoc(), resultType, data, len);
+    rewriter.replaceOp(op, fatPtr);
+    return success();
+  }
+};
+
 struct LoadOpConversion : public OpConversionPattern<rustmir::LoadOp> {
   using OpConversionPattern<rustmir::LoadOp>::OpConversionPattern;
 
@@ -334,7 +586,7 @@ struct ConvertRustTypedMemoryToLLVMPass
     : public mlir::impl::ConvertRustTypedMemoryToLLVMPassBase<
           ConvertRustTypedMemoryToLLVMPass> {
   void getDependentDialects(DialectRegistry &registry) const final {
-    registry.insert<func::FuncDialect, LLVM::LLVMDialect,
+    registry.insert<arith::ArithDialect, func::FuncDialect, LLVM::LLVMDialect,
                     rustmir::RustMIRDialect>();
   }
 
@@ -346,10 +598,12 @@ struct ConvertRustTypedMemoryToLLVMPass
     foldStringLiteralCalls(module);
 
     ConversionTarget target(*context);
-    target.addLegalDialect<func::FuncDialect, LLVM::LLVMDialect,
+    target.addLegalDialect<arith::ArithDialect, func::FuncDialect, LLVM::LLVMDialect,
                            rustmir::RustMIRDialect>();
     target.addIllegalOp<rustmir::LocalSlotOp, rustmir::LoadOp, rustmir::StoreOp,
-                        rustmir::FieldAddrOp, rustmir::BorrowOp,
+                        rustmir::FieldAddrOp, rustmir::IndexAddrOp,
+                        rustmir::SliceFromArrayOp, rustmir::PtrMetadataOp,
+                        rustmir::SubsliceOp, rustmir::BorrowOp,
                         rustmir::RawAddressOp>();
     target.addDynamicallyLegalOp<func::FuncOp>([&](func::FuncOp op) {
       return !hasTypeConversion(op.getFunctionType().getInputs(),
@@ -371,7 +625,9 @@ struct ConvertRustTypedMemoryToLLVMPass
     RewritePatternSet patterns(context);
     patterns
         .add<LocalSlotOpConversion, LoadOpConversion, StoreOpConversion,
-             FieldAddrOpConversion, BorrowOpConversion, RawAddressOpConversion>(
+             FieldAddrOpConversion, IndexAddrOpConversion,
+             SliceFromArrayOpConversion, PtrMetadataOpConversion,
+             SubsliceOpConversion, BorrowOpConversion, RawAddressOpConversion>(
             typeConverter, context);
     populateFunctionOpInterfaceTypeConversionPattern<func::FuncOp>(
         patterns, typeConverter);

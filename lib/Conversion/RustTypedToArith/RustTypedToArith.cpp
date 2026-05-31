@@ -114,6 +114,12 @@ public:
       return LLVM::LLVMArrayType::get(this->context, elementType,
                                       type.getLength());
     });
+    addConversion([this](rustmir::TypedSliceType type) -> Type {
+      Type elementType = convertType(type.getElementType());
+      if (!elementType)
+        return Type();
+      return rustmir::TypedSliceType::get(this->context, elementType);
+    });
     addConversion([this](rustmir::TypedRefType type) -> Type {
       Type pointeeType = convertType(type.getPointeeType());
       if (!pointeeType)
@@ -767,6 +773,80 @@ struct FieldAddrConversion : public OpConversionPattern<rustmir::FieldAddrOp> {
   }
 };
 
+struct IndexAddrConversion : public OpConversionPattern<rustmir::IndexAddrOp> {
+  using OpConversionPattern<rustmir::IndexAddrOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::IndexAddrOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType =
+        getTypeConverter()->convertType(op.getAddress().getType());
+    auto addrType = dyn_cast_or_null<rustmir::TypedAddrType>(resultType);
+    if (!addrType)
+      return failure();
+    auto newOp = mlir::rust::createOp<rustmir::IndexAddrOp>(
+        rewriter, op.getLoc(), addrType, adaptor.getBase(),
+        adaptor.getIndex(), op.getSpanAttr());
+    rewriter.replaceOp(op, newOp.getAddress());
+    return success();
+  }
+};
+
+struct SliceFromArrayConversion
+    : public OpConversionPattern<rustmir::SliceFromArrayOp> {
+  using OpConversionPattern<rustmir::SliceFromArrayOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::SliceFromArrayOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return failure();
+    auto newOp = mlir::rust::createOp<rustmir::SliceFromArrayOp>(
+        rewriter, op.getLoc(), resultType, adaptor.getSource(),
+        op.getSpanAttr());
+    rewriter.replaceOp(op, newOp.getResult());
+    return success();
+  }
+};
+
+struct PtrMetadataConversion
+    : public OpConversionPattern<rustmir::PtrMetadataOp> {
+  using OpConversionPattern<rustmir::PtrMetadataOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::PtrMetadataOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType =
+        getTypeConverter()->convertType(op.getMetadata().getType());
+    if (!resultType)
+      return failure();
+    auto newOp = mlir::rust::createOp<rustmir::PtrMetadataOp>(
+        rewriter, op.getLoc(), resultType, adaptor.getSource(),
+        op.getSpanAttr());
+    rewriter.replaceOp(op, newOp.getMetadata());
+    return success();
+  }
+};
+
+struct SubsliceConversion : public OpConversionPattern<rustmir::SubsliceOp> {
+  using OpConversionPattern<rustmir::SubsliceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::SubsliceOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return failure();
+    auto newOp = mlir::rust::createOp<rustmir::SubsliceOp>(
+        rewriter, op.getLoc(), resultType, adaptor.getSource(),
+        op.getFromIndexAttr(), op.getToIndexAttr(), op.getFromEndAttr(),
+        op.getSpanAttr());
+    rewriter.replaceOp(op, newOp.getResult());
+    return success();
+  }
+};
+
 struct TypedReturnConversion
     : public OpConversionPattern<rustmir::TypedReturnOp> {
   using OpConversionPattern<rustmir::TypedReturnOp>::OpConversionPattern;
@@ -944,6 +1024,31 @@ struct ConvertRustTypedToArithPass
           return !needsTypeConversion(op.getBase().getType(), typeConverter) &&
                  !needsTypeConversion(op.getAddress().getType(), typeConverter);
         });
+    target.addDynamicallyLegalOp<rustmir::IndexAddrOp>(
+        [&](rustmir::IndexAddrOp op) {
+          return !needsTypeConversion(op.getBase().getType(), typeConverter) &&
+                 !needsTypeConversion(op.getIndex().getType(), typeConverter) &&
+                 !needsTypeConversion(op.getAddress().getType(), typeConverter);
+        });
+    target.addDynamicallyLegalOp<rustmir::SliceFromArrayOp>(
+        [&](rustmir::SliceFromArrayOp op) {
+          return !needsTypeConversion(op.getSource().getType(),
+                                      typeConverter) &&
+                 !needsTypeConversion(op.getResult().getType(), typeConverter);
+        });
+    target.addDynamicallyLegalOp<rustmir::PtrMetadataOp>(
+        [&](rustmir::PtrMetadataOp op) {
+          return !needsTypeConversion(op.getSource().getType(),
+                                      typeConverter) &&
+                 !needsTypeConversion(op.getMetadata().getType(),
+                                      typeConverter);
+        });
+    target.addDynamicallyLegalOp<rustmir::SubsliceOp>(
+        [&](rustmir::SubsliceOp op) {
+          return !needsTypeConversion(op.getSource().getType(),
+                                      typeConverter) &&
+                 !needsTypeConversion(op.getResult().getType(), typeConverter);
+        });
     target.addDynamicallyLegalOp<rustmir::TypedReturnOp>(
         [&](rustmir::TypedReturnOp op) {
           return llvm::none_of(op.getValues(), [&](Value value) {
@@ -1004,8 +1109,9 @@ struct ConvertRustTypedToArithPass
         NegOpConversion, NotOpConversion, LocalSlotConversion, LoadConversion,
         StoreConversion, BorrowOpConversion, RawAddressOpConversion,
         MakeAggregateConversion, FieldConversion, FieldAddrConversion,
-        TypedReturnConversion, TypedSwitchIntConversion, TypedAssertConversion,
-        TypedCallConversion>(typeConverter, context);
+        IndexAddrConversion, SliceFromArrayConversion, PtrMetadataConversion,
+        SubsliceConversion, TypedReturnConversion, TypedSwitchIntConversion,
+        TypedAssertConversion, TypedCallConversion>(typeConverter, context);
     if (failed(applyPartialConversion(module, target, std::move(patterns))))
       signalPassFailure();
   }

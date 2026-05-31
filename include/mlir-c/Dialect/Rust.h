@@ -59,6 +59,8 @@ MLIR_CAPI_EXPORTED MlirType rustTypedTupleTypeGet(MlirContext context,
 MLIR_CAPI_EXPORTED MlirType rustTypedArrayTypeGet(MlirContext context,
                                                   MlirType elementType,
                                                   uint64_t length);
+MLIR_CAPI_EXPORTED MlirType rustTypedSliceTypeGet(MlirContext context,
+                                                  MlirType elementType);
 MLIR_CAPI_EXPORTED MlirType rustTypedRefTypeGet(MlirContext context,
                                                 MlirStringRef mutability,
                                                 MlirType pointeeType);
@@ -108,11 +110,16 @@ MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueBinaryOpCreate(
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueUnaryOpCreate(
     MlirLocation location, MlirStringRef kind, MlirStringRef op,
     MlirOperation operand);
+MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueCastCreate(
+    MlirLocation location, MlirStringRef kind, MlirStringRef castKind,
+    MlirOperation operand, MlirStringRef type, MlirStringRef debug);
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueAggregateCreate(
     MlirLocation location, MlirStringRef kind, MlirStringRef aggregateKind,
     intptr_t numOperands, MlirOperation const *operands);
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueUseCreate(MlirLocation location,
                                                         MlirOperation operand);
+MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueLenCreate(MlirLocation location,
+                                                        MlirOperation place);
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueRefCreate(
     MlirLocation location, MlirStringRef rustRegion, MlirStringRef borrowKind,
     MlirStringRef mutability, MlirOperation place, MlirStringRef debug);

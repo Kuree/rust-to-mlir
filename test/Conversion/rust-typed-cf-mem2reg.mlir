@@ -9,16 +9,16 @@ module {
     }
     rust.typed.block 1 {
       %one = rust.typed.const {debug = "1"} : !rust.mir.int<"i32">
-      rust.typed.store %one, %slot : !rust.mir.int<"i32">, <!rust.mir.int<"i32">>
+      rust.typed.store %one, %slot : !rust.mir.int<"i32">, !rust.typed.slot<!rust.mir.int<"i32">>
       rust.typed.goto {target = 3 : i64}
     }
     rust.typed.block 2 {
       %two = rust.typed.const {debug = "2"} : !rust.mir.int<"i32">
-      rust.typed.store %two, %slot : !rust.mir.int<"i32">, <!rust.mir.int<"i32">>
+      rust.typed.store %two, %slot : !rust.mir.int<"i32">, !rust.typed.slot<!rust.mir.int<"i32">>
       rust.typed.goto {target = 3 : i64}
     }
     rust.typed.block 3 {
-      %loaded = rust.typed.load %slot : <!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
+      %loaded = rust.typed.load %slot : !rust.typed.slot<!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
       rust.typed.return %loaded : !rust.mir.int<"i32">
     }
   }

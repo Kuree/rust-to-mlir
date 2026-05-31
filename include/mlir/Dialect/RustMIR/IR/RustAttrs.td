@@ -123,4 +123,21 @@ def RustUnaryOpKind : Rust_I32EnumAttr<"RustUnaryOpKind",
 ]>;
 def RustUnaryOpKindAttr : Rust_EnumAttr<RustUnaryOpKind, "unary_op">;
 
+def RustCastKind : Rust_I32EnumAttr<"RustCastKind",
+    "Rust MIR cast kind", [
+  I32EnumAttrCase<"PointerExposeAddress", 0, "PointerExposeAddress">,
+  I32EnumAttrCase<"PointerWithExposedProvenance", 1,
+                  "PointerWithExposedProvenance">,
+  I32EnumAttrCase<"PointerCoercion", 2, "PointerCoercion">,
+  I32EnumAttrCase<"IntToInt", 3, "IntToInt">,
+  I32EnumAttrCase<"FloatToInt", 4, "FloatToInt">,
+  I32EnumAttrCase<"FloatToFloat", 5, "FloatToFloat">,
+  I32EnumAttrCase<"IntToFloat", 6, "IntToFloat">,
+  I32EnumAttrCase<"PtrToPtr", 7, "PtrToPtr">,
+  I32EnumAttrCase<"FnPtrToPtr", 8, "FnPtrToPtr">,
+  I32EnumAttrCase<"Transmute", 9, "Transmute">,
+  I32EnumAttrCase<"Subtype", 10, "Subtype">
+]>;
+def RustCastKindAttr : Rust_EnumAttr<RustCastKind, "cast_kind">;
+
 #endif // MLIR_DIALECT_RUSTMIR_IR_RUSTATTRS_TD

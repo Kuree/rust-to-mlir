@@ -7,8 +7,8 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<index = 32 : i32, "dlti.endianne
     %lhs = rust.typed.const {debug = "40"} : !rust.mir.int<"usize">
     %rhs = rust.typed.const {debug = "2"} : !rust.mir.int<"usize">
     %sum = rust.typed.add %lhs, %rhs : !rust.mir.int<"usize">, !rust.mir.int<"usize"> -> !rust.mir.int<"usize">
-    rust.typed.store %sum, %slot : !rust.mir.int<"usize">, <!rust.mir.int<"usize">>
-    %loaded = rust.typed.load %slot : <!rust.mir.int<"usize">> -> !rust.mir.int<"usize">
+    rust.typed.store %sum, %slot : !rust.mir.int<"usize">, !rust.typed.slot<!rust.mir.int<"usize">>
+    %loaded = rust.typed.load %slot : !rust.typed.slot<!rust.mir.int<"usize">> -> !rust.mir.int<"usize">
     rust.typed.return %loaded : !rust.mir.int<"usize">
   }
 
@@ -76,8 +76,8 @@ module attributes {dlti.dl_spec = #dlti.dl_spec<index = 32 : i32, "dlti.endianne
 // CHECK: %[[LHS:.*]] = arith.constant 40 : i32
 // CHECK: %[[RHS:.*]] = arith.constant 2 : i32
 // CHECK: %[[SUM:.*]] = arith.addi %[[LHS]], %[[RHS]] : i32
-// CHECK: rust.typed.store %[[SUM]], %[[SLOT]] : i32, <i32>
-// CHECK: %[[LOADED:.*]] = rust.typed.load %[[SLOT]] : <i32> -> i32
+// CHECK: rust.typed.store %[[SUM]], %[[SLOT]] : i32, !rust.typed.slot<i32>
+// CHECK: %[[LOADED:.*]] = rust.typed.load %[[SLOT]] : !rust.typed.slot<i32> -> i32
 // CHECK: rust.typed.return %[[LOADED]] : i32
 
 // CHECK-LABEL: rust.typed.func @integer_ops

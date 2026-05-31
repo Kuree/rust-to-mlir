@@ -30,6 +30,7 @@ add_custom_command(
     ${CMAKE_CURRENT_SOURCE_DIR}/rust-mir-extract/Cargo.lock
     ${CMAKE_CURRENT_SOURCE_DIR}/rust-mir-extract/.cargo/config.toml
     ${CMAKE_CURRENT_SOURCE_DIR}/rust-mir-extract/build.rs
+    ${CMAKE_CURRENT_SOURCE_DIR}/rust-mir-extract/src/lib.rs
     ${CMAKE_CURRENT_SOURCE_DIR}/rust-mir-extract/src/main.rs
     RustToLLVMRustCAPI
   COMMENT "Building rust-mir-extract with Cargo"

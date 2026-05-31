@@ -4,14 +4,14 @@ module {
   rust.typed.func @stored {
     %slot = rust.typed.local_slot {index = 0 : i64, name = "_0", role = #rust.local_role<return>} : <!rust.mir.int<"i32">>
     %value = rust.typed.const {debug = "7"} : !rust.mir.int<"i32">
-    rust.typed.store %value, %slot : !rust.mir.int<"i32">, <!rust.mir.int<"i32">>
-    %loaded = rust.typed.load %slot : <!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
+    rust.typed.store %value, %slot : !rust.mir.int<"i32">, !rust.typed.slot<!rust.mir.int<"i32">>
+    %loaded = rust.typed.load %slot : !rust.typed.slot<!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
     rust.typed.return %loaded : !rust.mir.int<"i32">
   }
 
   rust.typed.func @default {
     %slot = rust.typed.local_slot {index = 1 : i64, name = "_1"} : <!rust.mir.int<"i32">>
-    %loaded = rust.typed.load %slot : <!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
+    %loaded = rust.typed.load %slot : !rust.typed.slot<!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
     rust.typed.return %loaded : !rust.mir.int<"i32">
   }
 
@@ -19,15 +19,15 @@ module {
     %slot = rust.typed.local_slot {index = 2 : i64, name = "_2"} : <!rust.mir.int<"i32">>
     %first = rust.typed.const {debug = "1"} : !rust.mir.int<"i32">
     %second = rust.typed.const {debug = "2"} : !rust.mir.int<"i32">
-    rust.typed.store %first, %slot : !rust.mir.int<"i32">, <!rust.mir.int<"i32">>
-    rust.typed.store %second, %slot : !rust.mir.int<"i32">, <!rust.mir.int<"i32">>
-    %loaded = rust.typed.load %slot : <!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
+    rust.typed.store %first, %slot : !rust.mir.int<"i32">, !rust.typed.slot<!rust.mir.int<"i32">>
+    rust.typed.store %second, %slot : !rust.mir.int<"i32">, !rust.typed.slot<!rust.mir.int<"i32">>
+    %loaded = rust.typed.load %slot : !rust.typed.slot<!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
     rust.typed.return %loaded : !rust.mir.int<"i32">
   }
 
   rust.typed.func @arg_slot {
     %arg = rust.typed.local_slot {index = 1 : i64, name = "_1", role = #rust.local_role<arg>} : <!rust.mir.int<"i32">>
-    %loaded = rust.typed.load %arg : <!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
+    %loaded = rust.typed.load %arg : !rust.typed.slot<!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
     rust.typed.return %loaded : !rust.mir.int<"i32">
   }
 }

@@ -14,6 +14,7 @@ using SlotType = ::mlir::rust::mir::SlotType;
 using AddrType = ::mlir::rust::mir::TypedAddrType;
 using TupleType = ::mlir::rust::mir::TypedTupleType;
 using ArrayType = ::mlir::rust::mir::TypedArrayType;
+using SliceType = ::mlir::rust::mir::TypedSliceType;
 using RefType = ::mlir::rust::mir::TypedRefType;
 using RawPtrType = ::mlir::rust::mir::TypedRawPtrType;
 } // namespace mlir::rust::typed

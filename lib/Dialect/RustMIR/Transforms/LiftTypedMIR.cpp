@@ -97,6 +97,8 @@ Type typeFromRustDebug(MLIRContext *context, StringRef spelling) {
     return rust::mir::IntType::get(context, "usize");
   if (s.contains("RigidTy(Ref("))
     return rust::mir::RefType::get(context, s);
+  if (s.contains("RigidTy(Slice("))
+    return rust::mir::SliceType::get(context, s);
   if (s.contains("RigidTy(Array("))
     return rust::mir::ArrayType::get(context, s);
   if (s.contains("RigidTy(Adt("))
@@ -226,27 +228,75 @@ Type getIndexedElementType(Type aggregateType, Attribute index) {
   return {};
 }
 
-IntegerAttr getStaticProjectionIndexAttr(Operation &projectionElem) {
+Type getDynamicallyIndexedElementType(Type aggregateType) {
+  if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(aggregateType))
+    return arrayType.getElementType();
+  if (auto sliceType = dyn_cast<rust::mir::TypedSliceType>(aggregateType))
+    return sliceType.getElementType();
+  return {};
+}
+
+Type getPointeeType(Type pointerType) {
+  if (auto refType = dyn_cast<rust::mir::TypedRefType>(pointerType))
+    return refType.getPointeeType();
+  if (auto rawPtrType = dyn_cast<rust::mir::TypedRawPtrType>(pointerType))
+    return rawPtrType.getPointeeType();
+  return {};
+}
+
+StringRef getPointerMutability(Type pointerType) {
+  if (auto refType = dyn_cast<rust::mir::TypedRefType>(pointerType))
+    return refType.getMutability();
+  if (auto rawPtrType = dyn_cast<rust::mir::TypedRawPtrType>(pointerType))
+    return rawPtrType.getMutability();
+  return "shared";
+}
+
+Type getSubsliceType(Type aggregateType, MLIRContext *context) {
+  Type elementType = getDynamicallyIndexedElementType(aggregateType);
+  if (!elementType)
+    return {};
+  return rust::mir::TypedSliceType::get(context, elementType);
+}
+
+IntegerAttr getStaticProjectionIndexAttr(Operation &projectionElem,
+                                         Type aggregateType,
+                                         OpBuilder &builder) {
   if (auto field = dyn_cast<rust::mir::ProjectionFieldOp>(projectionElem))
     return field.getIndexAttr();
 
   auto constantIndex =
       dyn_cast<rust::mir::ProjectionConstantIndexOp>(projectionElem);
-  if (!constantIndex || constantIndex.getFromEnd())
+  if (!constantIndex)
     return {};
 
-  return constantIndex.getOffsetAttr();
+  if (!constantIndex.getFromEnd())
+    return constantIndex.getOffsetAttr();
+
+  if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(aggregateType)) {
+    int64_t offset = constantIndex.getOffset();
+    uint64_t length = arrayType.getLength();
+    if (offset < 0 || static_cast<uint64_t>(offset) > length)
+      return {};
+    return builder.getI64IntegerAttr(static_cast<int64_t>(length) - offset);
+  }
+
+  return {};
 }
 
-Value createLoad(OpBuilder &builder, Location loc, LocalSlot &slot) {
-  return mlir::rust::createOp<rust::mir::LoadOp>(builder, loc, slot.elementType,
-                                                 slot.slot)
+Value createLoad(OpBuilder &builder, Location loc, Value address,
+                 Type elementType) {
+  return mlir::rust::createOp<rust::mir::LoadOp>(builder, loc, elementType,
+                                                 address)
       .getValue();
 }
 
-void createStore(OpBuilder &builder, Location loc, Value value,
-                 LocalSlot &slot) {
-  mlir::rust::createOp<rust::mir::StoreOp>(builder, loc, value, slot.slot);
+Value createLoad(OpBuilder &builder, Location loc, LocalSlot &slot) {
+  return createLoad(builder, loc, slot.slot, slot.elementType);
+}
+
+void createStore(OpBuilder &builder, Location loc, Value value, Value address) {
+  mlir::rust::createOp<rust::mir::StoreOp>(builder, loc, value, address);
 }
 
 std::optional<PlaceAddress>
@@ -267,7 +317,57 @@ materializePlaceAddress(rust::mir::PlaceOp place, OpBuilder &builder,
     return PlaceAddress{address, elementType};
 
   for (Operation &projectionElem : place.getBody().front()) {
-    IntegerAttr indexAttr = getStaticProjectionIndexAttr(projectionElem);
+    if (isa<rust::mir::ProjectionDerefOp>(projectionElem)) {
+      Type pointeeType = getPointeeType(elementType);
+      if (!pointeeType)
+        return std::nullopt;
+
+      address = createLoad(builder, loc, address, elementType);
+      elementType = pointeeType;
+      continue;
+    }
+
+    if (auto dynamicIndex =
+            dyn_cast<rust::mir::ProjectionIndexOp>(projectionElem)) {
+      Type indexedType = getDynamicallyIndexedElementType(elementType);
+      if (!indexedType)
+        return std::nullopt;
+
+      LocalSlot *indexSlot =
+          lookupSlot(slots, "_" + std::to_string(dynamicIndex.getLocal()));
+      if (!indexSlot)
+        return std::nullopt;
+
+      Value index = createLoad(builder, loc, *indexSlot);
+      auto addrType =
+          rust::mir::TypedAddrType::get(place.getContext(), indexedType);
+      address = mlir::rust::createOp<rust::mir::IndexAddrOp>(
+                    builder, loc, addrType, address, index, spanAttr)
+                    .getAddress();
+      elementType = indexedType;
+      continue;
+    }
+
+    if (auto subslice =
+            dyn_cast<rust::mir::ProjectionSubsliceOp>(projectionElem)) {
+      Type sliceType = getSubsliceType(elementType, place.getContext());
+      if (!sliceType)
+        return std::nullopt;
+
+      auto resultType = rust::mir::TypedRefType::get(
+          place.getContext(), getPointerMutability(address.getType()),
+          sliceType);
+      address = mlir::rust::createOp<rust::mir::SubsliceOp>(
+                    builder, loc, resultType, address,
+                    subslice.getFromIndexAttr(), subslice.getToIndexAttr(),
+                    subslice.getFromEndAttr(), spanAttr)
+                    .getResult();
+      elementType = sliceType;
+      continue;
+    }
+
+    IntegerAttr indexAttr =
+        getStaticProjectionIndexAttr(projectionElem, elementType, builder);
     if (!indexAttr)
       return std::nullopt;
 
@@ -301,7 +401,30 @@ std::optional<Type> inferPlaceType(rust::mir::PlaceOp place,
     return type;
 
   for (Operation &projectionElem : place.getBody().front()) {
-    IntegerAttr indexAttr = getStaticProjectionIndexAttr(projectionElem);
+    if (isa<rust::mir::ProjectionDerefOp>(projectionElem)) {
+      type = getPointeeType(type);
+      if (!type)
+        return std::nullopt;
+      continue;
+    }
+
+    if (isa<rust::mir::ProjectionIndexOp>(projectionElem)) {
+      type = getDynamicallyIndexedElementType(type);
+      if (!type)
+        return std::nullopt;
+      continue;
+    }
+
+    if (isa<rust::mir::ProjectionSubsliceOp>(projectionElem)) {
+      type = getSubsliceType(type, place.getContext());
+      if (!type)
+        return std::nullopt;
+      continue;
+    }
+
+    OpBuilder builder(place.getContext());
+    IntegerAttr indexAttr =
+        getStaticProjectionIndexAttr(projectionElem, type, builder);
     if (!indexAttr)
       return std::nullopt;
 
@@ -338,41 +461,14 @@ std::optional<Value> materializePlaceRead(rust::mir::PlaceOp place,
                                           llvm::StringMap<LocalSlot> &slots,
                                           Type expectedType,
                                           StringAttr spanAttr) {
-  std::optional<std::string> localName = getPlaceLocalName(place);
-  if (!localName)
+  std::optional<PlaceAddress> address =
+      materializePlaceAddress(place, builder, loc, slots, spanAttr);
+  if (!address)
     return std::nullopt;
-
-  LocalSlot *slot = lookupSlot(slots, *localName);
-  if (!slot)
+  Type elementType = address->elementType ? address->elementType : expectedType;
+  if (!elementType)
     return std::nullopt;
-
-  Value value = createLoad(builder, loc, *slot);
-  if (!hasProjection(place))
-    return value;
-
-  Block &projectionBlock = place.getBody().front();
-  for (auto indexedProjection : llvm::enumerate(projectionBlock)) {
-    Operation &projectionElem = indexedProjection.value();
-    IntegerAttr indexAttr = getStaticProjectionIndexAttr(projectionElem);
-    if (!indexAttr)
-      return std::nullopt;
-
-    Type resultType = getIndexedElementType(value.getType(), indexAttr);
-
-    bool isLastProjection =
-        indexedProjection.index() + 1 == projectionBlock.getOperations().size();
-    if (!resultType && isLastProjection)
-      resultType = expectedType;
-    if (!resultType)
-      return std::nullopt;
-
-    value = mlir::rust::createOp<rust::mir::FieldOp>(
-                builder, loc, resultType, value,
-                static_cast<int64_t>(indexAttr.getInt()), spanAttr)
-                .getResult();
-  }
-
-  return value;
+  return createLoad(builder, loc, address->slot, elementType);
 }
 
 std::optional<Value> materializeOperand(Operation *operand, OpBuilder &builder,
@@ -505,6 +601,10 @@ std::optional<Value> createTypedUnaryOp(OpBuilder &builder, Location loc,
     return mlir::rust::createOp<rust::mir::NotOp>(builder, loc, resultType,
                                                   input, spanAttr)
         .getResult();
+  if (op == rust::mir::RustUnaryOpKind::PtrMetadata)
+    return mlir::rust::createOp<rust::mir::PtrMetadataOp>(
+               builder, loc, resultType, input, spanAttr)
+        .getMetadata();
   return std::nullopt;
 }
 
@@ -513,16 +613,11 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
   auto place = dyn_cast_or_null<rust::mir::PlaceOp>(childAt(assign, 0));
   if (!place)
     return assign.emitError("expected assignment destination place");
-  if (hasProjection(place))
-    return assign.emitError("cannot lift assignment to projected place yet");
 
-  std::optional<std::string> destName = getPlaceLocalName(place);
-  if (!destName)
-    return assign.emitError("expected assignment destination place");
-
-  LocalSlot *dest = lookupSlot(slots, *destName);
+  std::optional<PlaceAddress> dest = materializePlaceAddress(
+      place, builder, assign.getLoc(), slots, assign.getSpanAttr());
   if (!dest)
-    return assign.emitError("assignment destination has no local slot");
+    return assign.emitError("failed to materialize assignment destination");
 
   Operation *rvalue = childAt(assign, 1);
   if (!rvalue)
@@ -593,7 +688,7 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
                         builder, loc, dest->elementType,
                         ValueRange{value, overflow}, spanAttr)
                         .getResult();
-      createStore(builder, loc, tuple, *dest);
+      createStore(builder, loc, tuple, dest->slot);
       return success();
     }
 
@@ -602,7 +697,7 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     if (!result)
       return assign.emitError("unsupported binary op: ")
              << rust::mir::stringifyRustBinaryOpKind(op);
-    createStore(builder, loc, *result, *dest);
+    createStore(builder, loc, *result, dest->slot);
     return success();
   };
 
@@ -629,8 +724,45 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     if (!result)
       return assign.emitError("unsupported unary op: ")
              << rust::mir::stringifyRustUnaryOpKind(op);
-    createStore(builder, assign.getLoc(), *result, *dest);
+    createStore(builder, assign.getLoc(), *result, dest->slot);
     return success();
+  }
+
+  if (auto cast = dyn_cast<rust::mir::CastOp>(rvalue)) {
+    Operation *operandOp = childAt(cast, 0);
+    if (!operandOp)
+      return assign.emitError("expected cast operand");
+
+    std::optional<Value> operand =
+        materializeOperand(operandOp, builder, assign.getLoc(), slots, Type(),
+                           assign.getSpanAttr());
+    if (!operand)
+      return assign.emitError("failed to materialize cast operand");
+
+    if (cast.getCastKind() == rust::mir::RustCastKind::PointerCoercion) {
+      Type sourcePointee = getPointeeType((*operand).getType());
+      Type destPointee = getPointeeType(dest->elementType);
+      auto sourceArray = dyn_cast_or_null<rust::mir::TypedArrayType>(
+          sourcePointee);
+      auto destSlice = dyn_cast_or_null<rust::mir::TypedSliceType>(
+          destPointee);
+      if (sourceArray && destSlice &&
+          sourceArray.getElementType() == destSlice.getElementType()) {
+        Value result = mlir::rust::createOp<rust::mir::SliceFromArrayOp>(
+                           builder, assign.getLoc(), dest->elementType,
+                           *operand, assign.getSpanAttr())
+                           .getResult();
+        createStore(builder, assign.getLoc(), result, dest->slot);
+        return success();
+      }
+    }
+
+    if ((*operand).getType() == dest->elementType) {
+      createStore(builder, assign.getLoc(), *operand, dest->slot);
+      return success();
+    }
+
+    return assign.emitError("unsupported cast rvalue");
   }
 
   if (auto aggregate = dyn_cast<rust::mir::AggregateOp>(rvalue)) {
@@ -681,7 +813,7 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
                        builder, assign.getLoc(), dest->elementType, operands,
                        assign.getSpanAttr())
                        .getResult();
-    createStore(builder, assign.getLoc(), result, *dest);
+    createStore(builder, assign.getLoc(), result, dest->slot);
     return success();
   }
 
@@ -707,7 +839,7 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
             ref.getBorrowKindAttr(), ref.getMutabilityAttr(),
             ref.getRustRegionAttr(), assign.getSpanAttr())
             .getResult();
-    createStore(builder, assign.getLoc(), result, *dest);
+    createStore(builder, assign.getLoc(), result, dest->slot);
     return success();
   }
 
@@ -735,8 +867,46 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
                        address->slot, addressOf.getRawPtrKindAttr(),
                        addressOf.getMutabilityAttr(), assign.getSpanAttr())
                        .getResult();
-    createStore(builder, assign.getLoc(), result, *dest);
+    createStore(builder, assign.getLoc(), result, dest->slot);
     return success();
+  }
+
+  if (auto len = dyn_cast<rust::mir::LenOp>(rvalue)) {
+    auto sourcePlace = dyn_cast_or_null<rust::mir::PlaceOp>(childAt(len, 0));
+    if (!sourcePlace)
+      return assign.emitError("expected len source place");
+
+    std::optional<Type> sourceType = inferPlaceType(sourcePlace, slots);
+    rust::mir::TypedArrayType arrayType;
+    if (sourceType)
+      arrayType = dyn_cast<rust::mir::TypedArrayType>(*sourceType);
+    if (arrayType) {
+      Attribute valueAttr = builder.getI64IntegerAttr(
+          static_cast<int64_t>(arrayType.getLength()));
+      StringAttr debugAttr =
+          builder.getStringAttr(std::to_string(arrayType.getLength()));
+      Value result = mlir::rust::createOp<rust::mir::TypedConstOp>(
+                         builder, assign.getLoc(), dest->elementType,
+                         valueAttr, debugAttr, assign.getSpanAttr())
+                         .getResult();
+      createStore(builder, assign.getLoc(), result, dest->slot);
+      return success();
+    }
+
+    if (sourceType && isa<rust::mir::TypedSliceType>(*sourceType)) {
+      std::optional<PlaceAddress> address = materializePlaceAddress(
+          sourcePlace, builder, assign.getLoc(), slots, assign.getSpanAttr());
+      if (!address)
+        return assign.emitError("failed to materialize len source address");
+      Value result = mlir::rust::createOp<rust::mir::PtrMetadataOp>(
+                         builder, assign.getLoc(), dest->elementType,
+                         address->slot, assign.getSpanAttr())
+                         .getMetadata();
+      createStore(builder, assign.getLoc(), result, dest->slot);
+      return success();
+    }
+
+    return assign.emitError("only array and slice len rvalues can be lifted");
   }
 
   if (auto use = dyn_cast<rust::mir::UseOp>(rvalue)) {
@@ -748,7 +918,7 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
                            dest->elementType, assign.getSpanAttr());
     if (!value)
       return assign.emitError("failed to materialize use operand");
-    createStore(builder, assign.getLoc(), *value, *dest);
+    createStore(builder, assign.getLoc(), *value, dest->slot);
     return success();
   }
 
@@ -836,15 +1006,11 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
       spanAttr);
 
   if (!resultTypes.empty()) {
-    if (hasProjection(destination))
-      return op.emitError("cannot lift call destination projection yet");
-    std::optional<std::string> destName = getPlaceLocalName(destination);
-    if (!destName)
-      return op.emitError("expected call destination local");
-    LocalSlot *dest = lookupSlot(slots, *destName);
+    std::optional<PlaceAddress> dest =
+        materializePlaceAddress(destination, builder, loc, slots, spanAttr);
     if (!dest)
-      return op.emitError("call destination has no local slot");
-    createStore(builder, loc, typedCall->getResult(0), *dest);
+      return op.emitError("failed to materialize call destination");
+    createStore(builder, loc, typedCall->getResult(0), dest->slot);
   }
 
   mlir::rust::createOp<rust::mir::TypedGotoOp>(

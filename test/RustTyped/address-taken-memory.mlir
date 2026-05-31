@@ -5,8 +5,8 @@ module {
   rust.typed.func @address_taken_scalar {
     %slot = rust.typed.local_slot {address_taken = true, index = 0 : i64, name = "_0"} : <!rust.mir.int<"i32">>
     %value = rust.typed.const {debug = "7"} : !rust.mir.int<"i32">
-    rust.typed.store %value, %slot : !rust.mir.int<"i32">, <!rust.mir.int<"i32">>
-    %loaded = rust.typed.load %slot : <!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
+    rust.typed.store %value, %slot : !rust.mir.int<"i32">, !rust.typed.slot<!rust.mir.int<"i32">>
+    %loaded = rust.typed.load %slot : !rust.typed.slot<!rust.mir.int<"i32">> -> !rust.mir.int<"i32">
     rust.typed.return %loaded : !rust.mir.int<"i32">
   }
 
@@ -15,8 +15,8 @@ module {
     %a = rust.typed.const {debug = "11"} : !rust.mir.int<"i32">
     %b = rust.typed.const {debug = "22"} : !rust.mir.int<"i64">
     %tuple = rust.typed.aggregate %a, %b : !rust.mir.int<"i32">, !rust.mir.int<"i64"> -> !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>
-    rust.typed.store %tuple, %slot : !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>, <!rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>>
-    %loaded = rust.typed.load %slot : <!rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>> -> !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>
+    rust.typed.store %tuple, %slot : !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>, !rust.typed.slot<!rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>>
+    %loaded = rust.typed.load %slot : !rust.typed.slot<!rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>> -> !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>
     rust.typed.return %loaded : !rust.typed.tuple<!rust.mir.int<"i32">, !rust.mir.int<"i64">>
   }
 }

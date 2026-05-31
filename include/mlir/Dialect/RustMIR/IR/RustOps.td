@@ -118,7 +118,16 @@ def Rust_BinaryOp : Rust_Op<"binary_op", [NoTerminator, SingleBlock]> {
   let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = "attr-dict-with-keyword $body";
 }
-def Rust_CastOp : Rust_MirrorOp<"cast", "MIR Rvalue::Cast">;
+def Rust_CastOp : Rust_Op<"cast", [NoTerminator, SingleBlock]> {
+  let summary = "MIR Rvalue::Cast";
+  let arguments = (ins RustCastKindAttr:$cast_kind,
+                       OptionalAttr<StrAttr>:$ty,
+                       OptionalAttr<StrAttr>:$debug,
+                       OptionalAttr<StrAttr>:$mir_kind,
+                       OptionalAttr<StrAttr>:$span);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+}
 def Rust_CheckedBinaryOp : Rust_Op<"checked_binary_op", [NoTerminator, SingleBlock]> {
   let summary = "MIR Rvalue::CheckedBinaryOp";
   let arguments = (ins RustBinaryOpKindAttr:$op,
@@ -129,7 +138,7 @@ def Rust_CheckedBinaryOp : Rust_Op<"checked_binary_op", [NoTerminator, SingleBlo
 }
 def Rust_CopyForDerefOp : Rust_MirrorOp<"copy_for_deref", "MIR Rvalue::CopyForDeref">;
 def Rust_DiscriminantOp : Rust_MirrorOp<"discriminant", "MIR Rvalue::Discriminant">;
-def Rust_LenOp : Rust_MirrorOp<"len", "MIR Rvalue::Len">;
+def Rust_LenOp : Rust_RegionOp<"len", "MIR Rvalue::Len">;
 def Rust_RefOp : Rust_Op<"ref", [NoTerminator, SingleBlock]> {
   let summary = "MIR Rvalue::Ref";
   let arguments = (ins RustBorrowKindAttr:$borrow_kind,
