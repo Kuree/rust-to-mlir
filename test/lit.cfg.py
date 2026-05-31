@@ -5,6 +5,7 @@ import shlex
 
 import lit.formats
 from lit.llvm import llvm_config
+from lit.llvm.subst import FindTool, ToolSubst
 
 loaded_site_config = False
 if not hasattr(config, "rust_to_mlir_obj_root"):
@@ -27,9 +28,13 @@ if not loaded_site_config:
     llvm_config.use_default_substitutions()
 
     config.rust_to_mlir_tools_dir = os.path.join(config.rust_to_mlir_obj_root, "bin")
-    tool_dirs = [config.rust_to_mlir_tools_dir, config.llvm_tools_dir]
-    tools = ["rust-opt", "rust-cpu-runner", "rust-run", "FileCheck", "not"]
-    llvm_config.add_tool_substitutions(tools, tool_dirs)
+    rust_to_mlir_tools = [
+        ToolSubst("rust-opt", FindTool("rust-opt"), unresolved="fatal"),
+        ToolSubst("rust-cpu-runner", FindTool("rust-cpu-runner"), unresolved="fatal"),
+        ToolSubst("rust-run", FindTool("rust-run"), unresolved="fatal"),
+    ]
+    llvm_config.add_tool_substitutions(rust_to_mlir_tools, [config.rust_to_mlir_tools_dir])
+    llvm_config.add_tool_substitutions(["FileCheck", "not"], [config.llvm_tools_dir])
 
     rust_mir_extract = os.path.join(config.rust_to_mlir_tools_dir, "rust-mir-extract")
     config.substitutions.append(("%rust_mir_extract", rust_mir_extract))

@@ -44,14 +44,17 @@ jobs:
             mlir-${LLVM_VERSION}-tools \
             ninja-build \
             python3 \
+            python3-pip \
             python3-venv
 
-      - name: Install lit
+      - name: Install Python tools
         run: |
+          sudo python3 -m pip install --break-system-packages lit
           python3 -m venv .venv
           .venv/bin/python -m pip install --upgrade pip
-          .venv/bin/python -m pip install lit
-          .venv/bin/lit --version
+          .venv/bin/python -m pip install auditwheel hatchling patchelf
+          lit --version
+          echo "LLVM_EXTERNAL_LIT=$(command -v lit)" >> "${GITHUB_ENV}"
 
       - name: Install Rust toolchain
         run: |
@@ -72,10 +75,21 @@ jobs:
             -DCMAKE_CXX_COMPILER=clang++-${LLVM_VERSION} \
             -DMLIR_DIR=${LLVM_ROOT}/lib/cmake/mlir \
             -DLLVM_DIR=${LLVM_ROOT}/lib/cmake/llvm \
-            -DLLVM_EXTERNAL_LIT=${GITHUB_WORKSPACE}/.venv/bin/lit
+            -DLLVM_EXTERNAL_LIT=${LLVM_EXTERNAL_LIT} \
+            -DRUST_TO_MLIR_PYTHON_EXECUTABLE=${GITHUB_WORKSPACE}/.venv/bin/python
 
       - name: Build
         run: ninja -C build
 
       - name: Run lit tests
-        run: .venv/bin/lit -v build/test
+        run: ninja -C build check-rust-to-mlir
+
+      - name: Build wheel
+        run: ninja -C build wheel
+
+      - name: Upload wheel
+        uses: actions/upload-artifact@v4
+        with:
+          name: rust-to-mlir-wheel
+          path: dist/*.whl
+          if-no-files-found: error
