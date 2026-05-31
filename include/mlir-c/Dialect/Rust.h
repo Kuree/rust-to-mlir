@@ -127,6 +127,11 @@ MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueAggregateCreate(
     MlirLocation location, MlirStringRef kind, MlirStringRef aggregateKind,
     int64_t variantIndex, MlirStringRef discriminant, intptr_t numOperands,
     MlirOperation const *operands);
+MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueCopyForDerefCreate(
+    MlirLocation location, MlirOperation place, MlirStringRef debug);
+MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueRepeatCreate(
+    MlirLocation location, MlirOperation operand, int64_t count,
+    MlirStringRef debug);
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueUseCreate(MlirLocation location,
                                                         MlirOperation operand);
 MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueLenCreate(MlirLocation location,

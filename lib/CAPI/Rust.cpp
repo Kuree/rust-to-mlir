@@ -678,6 +678,33 @@ MlirOperation rustMirRvalueAggregateCreate(MlirLocation location,
   return wrapped;
 }
 
+MlirOperation rustMirRvalueCopyForDerefCreate(MlirLocation location,
+                                              MlirOperation place,
+                                              MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.copy_for_deref");
+  state.addAttribute("mir_kind", builder.getStringAttr("CopyForDeref"));
+  addStringAttr(context, state, "debug", debug);
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), place);
+  return wrapped;
+}
+
+MlirOperation rustMirRvalueRepeatCreate(MlirLocation location,
+                                        MlirOperation operand, int64_t count,
+                                        MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.repeat");
+  state.addAttribute("count", builder.getI64IntegerAttr(count));
+  state.addAttribute("mir_kind", builder.getStringAttr("Repeat"));
+  addStringAttr(context, state, "debug", debug);
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), operand);
+  return wrapped;
+}
+
 MlirOperation rustMirRvalueUseCreate(MlirLocation location,
                                      MlirOperation operand) {
   MLIRContext *context = unwrap(location).getContext();

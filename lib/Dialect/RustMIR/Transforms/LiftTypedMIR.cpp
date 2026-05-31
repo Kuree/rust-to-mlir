@@ -1276,6 +1276,59 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     return success();
   }
 
+  if (auto copyForDeref = dyn_cast<rust::mir::CopyForDerefOp>(rvalue)) {
+    auto sourcePlace =
+        dyn_cast_or_null<rust::mir::PlaceOp>(childAt(copyForDeref, 0));
+    if (!sourcePlace)
+      return assign.emitError("expected copy_for_deref source place");
+
+    std::optional<Value> value =
+        materializePlaceRead(sourcePlace, builder, assign.getLoc(), slots,
+                             dest->elementType, assign.getSpanAttr());
+    if (!value)
+      return assign.emitError("failed to materialize copy_for_deref source");
+    createStore(builder, assign.getLoc(), *value, dest->slot);
+    return success();
+  }
+
+  if (auto repeat = dyn_cast<rust::mir::RepeatOp>(rvalue)) {
+    auto arrayType = dyn_cast<rust::mir::TypedArrayType>(dest->elementType);
+    if (!arrayType)
+      return assign.emitError("repeat destination is not an array");
+
+    int64_t signedCount = repeat.getCount();
+    if (signedCount < 0)
+      return assign.emitError("repeat count cannot be negative");
+    uint64_t count = static_cast<uint64_t>(signedCount);
+    if (count != arrayType.getLength())
+      return assign.emitError("repeat count does not match destination array "
+                              "length");
+
+    Operation *operandOp = childAt(repeat, 0);
+    if (!operandOp)
+      return assign.emitError("expected repeat operand");
+
+    SmallVector<Value> operands;
+    operands.reserve(count);
+    if (count > 0) {
+      std::optional<Value> operand =
+          materializeOperand(operandOp, builder, assign.getLoc(), slots,
+                             arrayType.getElementType(), assign.getSpanAttr());
+      if (!operand)
+        return assign.emitError("failed to materialize repeat operand");
+      for (uint64_t index = 0; index < count; ++index)
+        operands.push_back(*operand);
+    }
+
+    Value result =
+        mlir::rust::createOp<rust::mir::MakeAggregateOp>(
+            builder, assign.getLoc(), dest->elementType, operands,
+            IntegerAttr(), StringAttr(), assign.getSpanAttr())
+            .getResult();
+    createStore(builder, assign.getLoc(), result, dest->slot);
+    return success();
+  }
+
   if (auto discriminant = dyn_cast<rust::mir::DiscriminantOp>(rvalue)) {
     auto sourcePlace =
         dyn_cast_or_null<rust::mir::PlaceOp>(childAt(discriminant, 0));

@@ -175,6 +175,10 @@ type RustMirRvalueAggregateCreate = unsafe extern "C" fn(
     isize,
     *const MlirOperation,
 ) -> MlirOperation;
+type RustMirRvalueCopyForDerefCreate =
+    unsafe extern "C" fn(MlirLocation, MlirOperation, MlirStringRef) -> MlirOperation;
+type RustMirRvalueRepeatCreate =
+    unsafe extern "C" fn(MlirLocation, MlirOperation, i64, MlirStringRef) -> MlirOperation;
 type RustMirRvalueUseCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
 type RustMirRvalueLenCreate = unsafe extern "C" fn(MlirLocation, MlirOperation) -> MlirOperation;
 type RustMirRvalueDiscriminantCreate =
@@ -314,6 +318,8 @@ struct MlirApi {
     rvalue_unary_op_create: RustMirRvalueUnaryOpCreate,
     rvalue_cast_create: RustMirRvalueCastCreate,
     rvalue_aggregate_create: RustMirRvalueAggregateCreate,
+    rvalue_copy_for_deref_create: RustMirRvalueCopyForDerefCreate,
+    rvalue_repeat_create: RustMirRvalueRepeatCreate,
     rvalue_use_create: RustMirRvalueUseCreate,
     rvalue_len_create: RustMirRvalueLenCreate,
     rvalue_discriminant_create: RustMirRvalueDiscriminantCreate,
@@ -405,6 +411,11 @@ impl MlirApi {
                 rvalue_unary_op_create: load_symbol(handle, "rustMirRvalueUnaryOpCreate")?,
                 rvalue_cast_create: load_symbol(handle, "rustMirRvalueCastCreate")?,
                 rvalue_aggregate_create: load_symbol(handle, "rustMirRvalueAggregateCreate")?,
+                rvalue_copy_for_deref_create: load_symbol(
+                    handle,
+                    "rustMirRvalueCopyForDerefCreate",
+                )?,
+                rvalue_repeat_create: load_symbol(handle, "rustMirRvalueRepeatCreate")?,
                 rvalue_use_create: load_symbol(handle, "rustMirRvalueUseCreate")?,
                 rvalue_len_create: load_symbol(handle, "rustMirRvalueLenCreate")?,
                 rvalue_discriminant_create: load_symbol(handle, "rustMirRvalueDiscriminantCreate")?,
@@ -1078,6 +1089,15 @@ enum MirRvalue {
         discriminant: Option<String>,
         operands: Vec<MirOperand>,
     },
+    CopyForDeref {
+        place: MirPlace,
+        debug: String,
+    },
+    Repeat {
+        operand: Box<MirOperand>,
+        count: u64,
+        debug: String,
+    },
     Use {
         operand: Box<MirOperand>,
     },
@@ -1448,6 +1468,24 @@ impl MirRvalue {
                     variant_index,
                     discriminant,
                     operands: operands.iter().map(MirOperand::from_public).collect(),
+                }
+            }
+            Rvalue::CopyForDeref(place) => Self::CopyForDeref {
+                place: MirPlace::from_public(place),
+                debug: format!("{rvalue:?}"),
+            },
+            Rvalue::Repeat(operand, count) => {
+                let debug = format!("{rvalue:?}");
+                match count.eval_target_usize() {
+                    Ok(count) => Self::Repeat {
+                        operand: Box::new(MirOperand::from_public(operand)),
+                        count,
+                        debug,
+                    },
+                    Err(_) => Self::Unsupported {
+                        kind: "Repeat".to_string(),
+                        debug,
+                    },
                 }
             }
             Rvalue::Use(operand) => Self::Use {
@@ -2113,6 +2151,31 @@ impl MlirEmitter {
                         mlir_string(discriminant),
                         operands.len() as isize,
                         operands.as_ptr(),
+                    )
+                }
+            }
+            MirRvalue::CopyForDeref { place, debug } => {
+                let place = self.place_op(place, span);
+                unsafe {
+                    (self.api.rvalue_copy_for_deref_create)(
+                        self.location(span),
+                        place,
+                        mlir_string(debug),
+                    )
+                }
+            }
+            MirRvalue::Repeat {
+                operand,
+                count,
+                debug,
+            } => {
+                let operand = self.operand_op(operand, span);
+                unsafe {
+                    (self.api.rvalue_repeat_create)(
+                        self.location(span),
+                        operand,
+                        *count as i64,
+                        mlir_string(debug),
                     )
                 }
             }

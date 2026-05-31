@@ -138,7 +138,14 @@ def Rust_CheckedBinaryOp : Rust_Op<"checked_binary_op", [NoTerminator, SingleBlo
   let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = "attr-dict-with-keyword $body";
 }
-def Rust_CopyForDerefOp : Rust_MirrorOp<"copy_for_deref", "MIR Rvalue::CopyForDeref">;
+def Rust_CopyForDerefOp : Rust_Op<"copy_for_deref", [NoTerminator, SingleBlock]> {
+  let summary = "MIR Rvalue::CopyForDeref";
+  let arguments = (ins OptionalAttr<StrAttr>:$mir_kind,
+                       OptionalAttr<StrAttr>:$debug,
+                       OptionalAttr<StrAttr>:$span);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+}
 def Rust_DiscriminantOp : Rust_Op<"discriminant", [NoTerminator, SingleBlock]> {
   let summary = "MIR Rvalue::Discriminant";
   let arguments = (ins OptionalAttr<StrAttr>:$mir_kind,
@@ -158,7 +165,15 @@ def Rust_RefOp : Rust_Op<"ref", [NoTerminator, SingleBlock]> {
   let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = "attr-dict-with-keyword $body";
 }
-def Rust_RepeatOp : Rust_MirrorOp<"repeat", "MIR Rvalue::Repeat">;
+def Rust_RepeatOp : Rust_Op<"repeat", [NoTerminator, SingleBlock]> {
+  let summary = "MIR Rvalue::Repeat";
+  let arguments = (ins I64Attr:$count,
+                       OptionalAttr<StrAttr>:$mir_kind,
+                       OptionalAttr<StrAttr>:$debug,
+                       OptionalAttr<StrAttr>:$span);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+}
 def Rust_ShallowInitBoxOp : Rust_MirrorOp<"shallow_init_box", "MIR Rvalue::ShallowInitBox">;
 def Rust_ThreadLocalRefOp : Rust_MirrorOp<"thread_local_ref", "MIR Rvalue::ThreadLocalRef">;
 def Rust_NullaryOp : Rust_MirrorOp<"nullary_op", "MIR Rvalue::NullaryOp">;
