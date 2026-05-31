@@ -4,4 +4,4 @@ fn not_main() -> i32 {
     1
 }
 
-// CHECK: rust-run: main function not found; expected Rust item `rust_to_llvm_main::main`
+// CHECK: rust-run: main function not found; expected Rust item `rust_to_mlir_main::main`

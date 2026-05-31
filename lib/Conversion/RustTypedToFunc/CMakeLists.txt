@@ -1,11 +1,11 @@
-add_mlir_conversion_library(RustToLLVMRustTypedToFunc
+add_mlir_conversion_library(RustToMLIRRustTypedToFunc
   RustTypedToFunc.cpp
 
   DEPENDS
-  RustToLLVMRustTypedToFuncPassIncGen
+  RustToMLIRRustTypedToFuncPassIncGen
 
   LINK_LIBS PUBLIC
-  RustToLLVMRustMIRDialect
+  RustToMLIRRustMIRDialect
   MLIRFuncDialect
   MLIRIR
   MLIRPass

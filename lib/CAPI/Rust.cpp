@@ -6,7 +6,7 @@
 
 #include "mlir-c/Dialect/Rust.h"
 
-#include "RustToLLVM/Support/Toolchain.h"
+#include "RustToMLIR/Support/Toolchain.h"
 #include "mlir/Bytecode/BytecodeWriter.h"
 #include "mlir/CAPI/IR.h"
 #include "mlir/CAPI/Registration.h"
@@ -70,9 +70,9 @@ struct ParsedSpan {
 
 enum class EntryPointResult { Void, I32 };
 
-void ensureRustToLLVMPassesRegistered() {
+void ensureRustToMLIRPassesRegistered() {
   static std::once_flag once;
-  std::call_once(once, [] { rust_to_llvm::registerRustToLLVMPasses(); });
+  std::call_once(once, [] { rust_to_mlir::registerRustToMLIRPasses(); });
 }
 
 void ensureNativeTargetInitialized() {
@@ -270,8 +270,8 @@ int invokeEntryPoint(ExecutionEngine &engine, StringRef entryPoint,
 MlirContext rustMlirContextCreate(void) {
   auto *context = new MLIRContext();
   DialectRegistry registry;
-  rust_to_llvm::registerRustToLLVMDialects(registry);
-  rust_to_llvm::registerRustToLLVMIRTranslations(registry);
+  rust_to_mlir::registerRustToMLIRDialects(registry);
+  rust_to_mlir::registerRustToMLIRLLVMIRTranslations(registry);
   context->appendDialectRegistry(registry);
   context->loadDialect<rustmir::RustMIRDialect, DLTIDialect>();
   return wrap(context);
@@ -422,17 +422,17 @@ bool rustMlirLowerRustToLLVM(MlirOperation op, bool eraseSourceMIR) {
   if (!op.ptr)
     return false;
 
-  ensureRustToLLVMPassesRegistered();
-  rust_to_llvm::RustToLLVMLoweringOptions options;
+  ensureRustToMLIRPassesRegistered();
+  rust_to_mlir::RustToLLVMLoweringOptions options;
   options.eraseSourceMIR = eraseSourceMIR;
-  return succeeded(rust_to_llvm::lowerRustToLLVM(unwrap(op), options));
+  return succeeded(rust_to_mlir::lowerRustToLLVM(unwrap(op), options));
 }
 
 bool rustMlirRunPassPipeline(MlirOperation op, MlirStringRef pipeline) {
   if (!op.ptr)
     return false;
 
-  ensureRustToLLVMPassesRegistered();
+  ensureRustToMLIRPassesRegistered();
   PassManager pm(unwrap(op)->getContext());
   if (failed(parsePassPipeline(unwrap(pipeline), pm)))
     return false;

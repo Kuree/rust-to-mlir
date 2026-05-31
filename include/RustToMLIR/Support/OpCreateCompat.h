@@ -4,8 +4,8 @@
 //
 //===----------------------------------------------------------------------===//
 
-#ifndef RUST_TO_LLVM_SUPPORT_OPCREATECOMPAT_H
-#define RUST_TO_LLVM_SUPPORT_OPCREATECOMPAT_H
+#ifndef RUST_TO_MLIR_SUPPORT_OPCREATECOMPAT_H
+#define RUST_TO_MLIR_SUPPORT_OPCREATECOMPAT_H
 
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/Location.h"
@@ -40,4 +40,4 @@ OpT createOp(BuilderT &builder, Location loc, Args &&...args) {
 }
 } // namespace mlir::rust
 
-#endif // RUST_TO_LLVM_SUPPORT_OPCREATECOMPAT_H
+#endif // RUST_TO_MLIR_SUPPORT_OPCREATECOMPAT_H

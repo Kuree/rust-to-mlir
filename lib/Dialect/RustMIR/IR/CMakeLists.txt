@@ -1,4 +1,4 @@
-add_mlir_dialect_library(RustToLLVMRustMIRDialect
+add_mlir_dialect_library(RustToMLIRRustMIRDialect
   RustMIRDialect.cpp
   RustTypes.cpp
   RustOps.cpp
@@ -21,8 +21,8 @@ add_mlir_dialect_library(RustToLLVMRustMIRDialect
   MLIRSideEffectInterfaces
 )
 
-add_library(RustToLLVMRustTypedDialect INTERFACE)
-target_link_libraries(RustToLLVMRustTypedDialect
+add_library(RustToMLIRRustTypedDialect INTERFACE)
+target_link_libraries(RustToMLIRRustTypedDialect
   INTERFACE
-  RustToLLVMRustMIRDialect
+  RustToMLIRRustMIRDialect
 )

@@ -4,7 +4,7 @@
 //
 //===----------------------------------------------------------------------===//
 
-#include "RustToLLVM/Support/Toolchain.h"
+#include "RustToMLIR/Support/Toolchain.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
 #include "mlir/Dialect/LLVMIR/LLVMDialect.h"
@@ -58,21 +58,21 @@ cl::opt<std::string> rustTargetLibdir(
     cl::init(""));
 cl::opt<std::string> runtimeLibrary(
     "runtime-library",
-    cl::desc("Path to the RustToLLVM runtime shim shared library"),
+    cl::desc("Path to the RustToMLIR runtime shim shared library"),
     cl::init(""));
 
 llvm::StringRef getRuntimeLibraryFilename() {
 #if defined(_WIN32)
-  return "rust_to_llvm_runtime.dll";
+  return "rust_to_mlir_runtime.dll";
 #elif defined(__APPLE__)
-  return "librust_to_llvm_runtime.dylib";
+  return "librust_to_mlir_runtime.dylib";
 #else
-  return "librust_to_llvm_runtime.so";
+  return "librust_to_mlir_runtime.so";
 #endif
 }
 
 llvm::StringRef getRuntimeLibraryEnvVar() {
-  return "RUST_TO_LLVM_RUNTIME_LIBRARY";
+  return "RUST_TO_MLIR_RUNTIME_LIBRARY";
 }
 
 bool isRustStdSharedLibrary(llvm::StringRef filename) {
@@ -114,7 +114,7 @@ std::optional<std::string> getRustTargetLibdirFromRustc(llvm::StringRef rustc,
                                                         std::string &diagnostic) {
   llvm::SmallString<128> outputPath;
   if (std::error_code ec = llvm::sys::fs::createTemporaryFile(
-          "rust-to-llvm-target-libdir", "txt", outputPath)) {
+          "rust-to-mlir-target-libdir", "txt", outputPath)) {
     diagnostic = "failed to create temporary file for rustc output: " +
                  ec.message();
     return std::nullopt;
@@ -283,7 +283,7 @@ bool addRuntimeLibrary(const char *argv0, std::vector<std::string> &libraries) {
   std::vector<std::string> searchedPaths;
   std::optional<std::string> path = findRuntimeLibrary(argv0, searchedPaths);
   if (!path) {
-    llvm::errs() << "error: RustToLLVM runtime shim not found\n";
+    llvm::errs() << "error: RustToMLIR runtime shim not found\n";
     llvm::errs() << "searched:\n";
     for (const std::string &searchedPath : searchedPaths)
       llvm::errs() << "  " << searchedPath << "\n";
@@ -305,7 +305,7 @@ bool addRuntimeLibrary(const char *argv0, std::vector<std::string> &libraries) {
 
 mlir::LogicalResult lowerRustInput(mlir::Operation *op) {
   mlir::PassManager pm(op->getContext());
-  rust_to_llvm::populateRustToLLVMLoweringPipeline(pm);
+  rust_to_mlir::populateRustToLLVMLoweringPipeline(pm);
   if (failed(mlir::applyPassManagerCLOptions(pm)))
     return mlir::failure();
   return pm.run(op);
@@ -391,12 +391,12 @@ int main(int argc, char **argv) {
 
   mlir::registerMLIRContextCLOptions();
   mlir::registerPassManagerCLOptions();
-  rust_to_llvm::registerRustToLLVMPasses();
+  rust_to_mlir::registerRustToMLIRPasses();
   cl::ParseCommandLineOptions(argc, argv, "Rust MLIR CPU runner\n");
 
   mlir::DialectRegistry registry;
-  rust_to_llvm::registerRustToLLVMDialects(registry);
-  rust_to_llvm::registerRustToLLVMIRTranslations(registry);
+  rust_to_mlir::registerRustToMLIRDialects(registry);
+  rust_to_mlir::registerRustToMLIRLLVMIRTranslations(registry);
 
   mlir::MLIRContext context(registry);
   llvm::SourceMgr sourceMgr;

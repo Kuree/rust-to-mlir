@@ -1,16 +1,16 @@
-add_mlir_library(RustToLLVMSupport
+add_mlir_library(RustToMLIRSupport
   Toolchain.cpp
 
   ADDITIONAL_HEADER_DIRS
-  ${PROJECT_SOURCE_DIR}/include/RustToLLVM/Support
+  ${PROJECT_SOURCE_DIR}/include/RustToMLIR/Support
 
   LINK_LIBS PUBLIC
-  RustToLLVMRustMIRDialect
-  RustToLLVMRustMIRTransforms
-  RustToLLVMRustTypedToArith
-  RustToLLVMRustTypedToControlFlow
-  RustToLLVMRustTypedToFunc
-  RustToLLVMRustTypedMemoryToLLVM
+  RustToMLIRRustMIRDialect
+  RustToMLIRRustMIRTransforms
+  RustToMLIRRustTypedToArith
+  RustToMLIRRustTypedToControlFlow
+  RustToMLIRRustTypedToFunc
+  RustToMLIRRustTypedMemoryToLLVM
   MLIRArithDialect
   MLIRArithToLLVM
   MLIRBuiltinToLLVMIRTranslation

@@ -1,11 +1,11 @@
-add_mlir_conversion_library(RustToLLVMRustTypedToControlFlow
+add_mlir_conversion_library(RustToMLIRRustTypedToControlFlow
   RustTypedToControlFlow.cpp
 
   DEPENDS
-  RustToLLVMRustTypedToControlFlowPassIncGen
+  RustToMLIRRustTypedToControlFlowPassIncGen
 
   LINK_LIBS PUBLIC
-  RustToLLVMRustMIRDialect
+  RustToMLIRRustMIRDialect
   MLIRControlFlowDialect
   MLIRFuncDialect
   MLIRIR

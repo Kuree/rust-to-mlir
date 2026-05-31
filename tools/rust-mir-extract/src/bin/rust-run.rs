@@ -1,3 +1,9 @@
+//===- rust-run.rs - RustToMLIR runner driver ------------------*- Rust -*-===//
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #![feature(rustc_private)]
 
 use std::env;
@@ -5,7 +11,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::{self, Command};
 
-const DRIVER_CRATE_NAME: &str = "rust_to_llvm_main";
+const DRIVER_CRATE_NAME: &str = "rust_to_mlir_main";
 
 struct Options {
     input: PathBuf,
@@ -20,7 +26,7 @@ fn usage() -> &'static str {
     "usage: rust-run [options] <input.rs> [-- <rustc args>]\n\
      options:\n\
        -e, --entry SYMBOL              lowered entry symbol to execute\n\
-       --runtime-library PATH          RustToLLVM runtime shim shared library\n\
+       --runtime-library PATH          RustToMLIR runtime shim shared library\n\
        --rust-target-libdir PATH       Rust target libdir containing libstd\n\
        --shared-lib PATH               additional shared library for the JIT"
 }
@@ -103,15 +109,15 @@ fn current_exe_dir() -> Option<PathBuf> {
 fn runtime_library_filename() -> &'static str {
     #[cfg(target_os = "windows")]
     {
-        "rust_to_llvm_runtime.dll"
+        "rust_to_mlir_runtime.dll"
     }
     #[cfg(target_os = "macos")]
     {
-        "librust_to_llvm_runtime.dylib"
+        "librust_to_mlir_runtime.dylib"
     }
     #[cfg(all(not(target_os = "windows"), not(target_os = "macos")))]
     {
-        "librust_to_llvm_runtime.so"
+        "librust_to_mlir_runtime.so"
     }
 }
 
@@ -135,10 +141,10 @@ fn find_runtime_library(explicit: Option<&Path>) -> Result<PathBuf, String> {
     if let Some(path) = explicit {
         candidates.push(path.to_path_buf());
     }
-    if let Ok(path) = env::var("RUST_TO_LLVM_RUNTIME_LIBRARY") {
+    if let Ok(path) = env::var("RUST_TO_MLIR_RUNTIME_LIBRARY") {
         candidates.push(PathBuf::from(path));
     }
-    if let Some(path) = option_env!("RUST_TO_LLVM_RUNTIME_LIBRARY") {
+    if let Some(path) = option_env!("RUST_TO_MLIR_RUNTIME_LIBRARY") {
         candidates.push(PathBuf::from(path));
     }
     if let Some(exe_dir) = current_exe_dir() {
@@ -158,7 +164,7 @@ fn find_runtime_library(explicit: Option<&Path>) -> Result<PathBuf, String> {
     }
 
     Err(format!(
-        "RustToLLVM runtime shim was not found\nsearched:\n  {}",
+        "RustToMLIR runtime shim was not found\nsearched:\n  {}",
         candidates
             .iter()
             .map(|path| path.display().to_string())
@@ -170,7 +176,7 @@ fn find_runtime_library(explicit: Option<&Path>) -> Result<PathBuf, String> {
 fn rustc_program() -> String {
     env::var("RUSTC")
         .ok()
-        .or_else(|| option_env!("RUST_TO_LLVM_RUSTC_EXECUTABLE").map(str::to_string))
+        .or_else(|| option_env!("RUST_TO_MLIR_RUSTC_EXECUTABLE").map(str::to_string))
         .unwrap_or_else(|| "rustc".to_string())
 }
 

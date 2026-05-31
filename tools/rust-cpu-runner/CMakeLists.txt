@@ -2,12 +2,12 @@ add_mlir_tool(rust-cpu-runner
   rust-cpu-runner.cpp
 )
 add_dependencies(rust-cpu-runner
-  rust-to-llvm-runtime
+  rust-to-mlir-runtime
 )
 llvm_update_compile_flags(rust-cpu-runner)
 target_link_libraries(rust-cpu-runner
   PRIVATE
-  RustToLLVMSupport
+  RustToMLIRSupport
   MLIRExecutionEngine
   MLIRIR
   MLIRParser

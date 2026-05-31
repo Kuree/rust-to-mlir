@@ -6,7 +6,7 @@
 
 #include "mlir/Conversion/RustTypedToFunc/RustTypedToFunc.h"
 
-#include "RustToLLVM/Support/OpCreateCompat.h"
+#include "RustToMLIR/Support/OpCreateCompat.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/RustMIR/IR/RustMIRDialect.h"
 #include "mlir/Dialect/RustMIR/IR/RustTypes.h"

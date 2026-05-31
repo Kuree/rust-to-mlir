@@ -6,7 +6,7 @@
 
 #include "mlir/Conversion/RustTypedToControlFlow/RustTypedToControlFlow.h"
 
-#include "RustToLLVM/Support/OpCreateCompat.h"
+#include "RustToMLIR/Support/OpCreateCompat.h"
 #include "mlir/Dialect/ControlFlow/IR/ControlFlowOps.h"
 #include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/LLVMIR/LLVMAttrs.h"

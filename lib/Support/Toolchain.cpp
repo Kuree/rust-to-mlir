@@ -1,10 +1,10 @@
-//===- Toolchain.cpp - RustToLLVM tool setup helpers -----------*- C++ -*-===//
+//===- Toolchain.cpp - RustToMLIR tool setup helpers -----------*- C++ -*-===//
 //
 // SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
 //
 //===----------------------------------------------------------------------===//
 
-#include "RustToLLVM/Support/Toolchain.h"
+#include "RustToMLIR/Support/Toolchain.h"
 
 #include "mlir/Conversion/MathToLLVM/MathToLLVM.h"
 #include "mlir/Conversion/Passes.h"
@@ -30,14 +30,14 @@
 
 using namespace mlir;
 
-void rust_to_llvm::registerRustToLLVMDialects(DialectRegistry &registry) {
+void rust_to_mlir::registerRustToMLIRDialects(DialectRegistry &registry) {
   registry.insert<arith::ArithDialect, cf::ControlFlowDialect, DLTIDialect,
                   func::FuncDialect, index::IndexDialect, LLVM::LLVMDialect,
                   math::MathDialect, rust::mir::RustMIRDialect,
                   ub::UBDialect>();
 }
 
-void rust_to_llvm::registerRustToLLVMPasses() {
+void rust_to_mlir::registerRustToMLIRPasses() {
   registerArithToLLVMConversionPass();
   registerConvertControlFlowToLLVMPass();
   registerConvertFuncToLLVMPass();
@@ -54,12 +54,13 @@ void rust_to_llvm::registerRustToLLVMPasses() {
   registerSROA();
 }
 
-void rust_to_llvm::registerRustToLLVMIRTranslations(DialectRegistry &registry) {
+void rust_to_mlir::registerRustToMLIRLLVMIRTranslations(
+    DialectRegistry &registry) {
   registerBuiltinDialectTranslation(registry);
   registerLLVMDialectTranslation(registry);
 }
 
-void rust_to_llvm::populateRustToLLVMLoweringPipeline(
+void rust_to_mlir::populateRustToLLVMLoweringPipeline(
     OpPassManager &pm, const RustToLLVMLoweringOptions &options) {
   LiftTypedMIRPassOptions liftOptions;
   liftOptions.eraseSourceMIR = options.eraseSourceMIR;
@@ -81,7 +82,7 @@ void rust_to_llvm::populateRustToLLVMLoweringPipeline(
 }
 
 LogicalResult
-rust_to_llvm::lowerRustToLLVM(Operation *op,
+rust_to_mlir::lowerRustToLLVM(Operation *op,
                               const RustToLLVMLoweringOptions &options) {
   PassManager pm(op->getContext());
   populateRustToLLVMLoweringPipeline(pm, options);

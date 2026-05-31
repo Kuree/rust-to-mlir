@@ -1,11 +1,11 @@
-add_mlir_conversion_library(RustToLLVMRustTypedToArith
+add_mlir_conversion_library(RustToMLIRRustTypedToArith
   RustTypedToArith.cpp
 
   DEPENDS
-  RustToLLVMRustTypedToArithPassIncGen
+  RustToMLIRRustTypedToArithPassIncGen
 
   LINK_LIBS PUBLIC
-  RustToLLVMRustMIRDialect
+  RustToMLIRRustMIRDialect
   MLIRArithDialect
   MLIRControlFlowDialect
   MLIRDataLayoutInterfaces

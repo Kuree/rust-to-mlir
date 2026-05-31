@@ -6,7 +6,7 @@
 
 #include "mlir/Dialect/RustTyped/IR/RustTypedOps.h"
 
-#include "RustToLLVM/Support/OpCreateCompat.h"
+#include "RustToMLIR/Support/OpCreateCompat.h"
 #include "mlir/Dialect/LLVMIR/LLVMTypes.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"

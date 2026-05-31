@@ -1,3 +1,9 @@
+//===- lib.rs - Rust MIR extraction library --------------------*- Rust -*-===//
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 #![feature(rustc_private)]
 
 extern crate rustc_driver;
@@ -463,10 +469,10 @@ unsafe fn load_symbol<T: Copy>(handle: *mut c_void, name: &str) -> io::Result<T>
 }
 
 fn mlir_capi_library_path() -> String {
-    env::var("RUST_TO_LLVM_CAPI_LIBRARY")
+    env::var("RUST_TO_MLIR_CAPI_LIBRARY")
         .ok()
-        .or_else(|| option_env!("RUST_TO_LLVM_CAPI_LIBRARY").map(str::to_string))
-        .unwrap_or_else(|| "libRustToLLVMRustCAPI.so".to_string())
+        .or_else(|| option_env!("RUST_TO_MLIR_CAPI_LIBRARY").map(str::to_string))
+        .unwrap_or_else(|| "libRustToMLIRRustCAPI.so".to_string())
 }
 
 fn dl_error_string() -> String {
@@ -2607,14 +2613,14 @@ fn parse_options(args: impl IntoIterator<Item = String>) -> Result<Options, Stri
 fn cargo_program() -> String {
     env::var("CARGO")
         .ok()
-        .or_else(|| option_env!("RUST_TO_LLVM_CARGO_EXECUTABLE").map(str::to_string))
+        .or_else(|| option_env!("RUST_TO_MLIR_CARGO_EXECUTABLE").map(str::to_string))
         .unwrap_or_else(|| "cargo".to_string())
 }
 
 fn rustc_program() -> String {
     env::var("RUSTC")
         .ok()
-        .or_else(|| option_env!("RUST_TO_LLVM_RUSTC_EXECUTABLE").map(str::to_string))
+        .or_else(|| option_env!("RUST_TO_MLIR_RUSTC_EXECUTABLE").map(str::to_string))
         .unwrap_or_else(|| "rustc".to_string())
 }
 
@@ -2817,12 +2823,12 @@ fn run_rustc_wrapper() -> io::Result<i32> {
         return run_rustc_passthrough(&args);
     }
 
-    let out_dir = env::var_os("RUST_TO_LLVM_WRAPPER_OUT_DIR")
+    let out_dir = env::var_os("RUST_TO_MLIR_WRAPPER_OUT_DIR")
         .map(PathBuf::from)
         .ok_or_else(|| {
             io::Error::new(
                 io::ErrorKind::InvalidInput,
-                "RUST_TO_LLVM_WRAPPER_OUT_DIR is required in wrapper mode",
+                "RUST_TO_MLIR_WRAPPER_OUT_DIR is required in wrapper mode",
             )
         })?;
     fs::create_dir_all(&out_dir)?;
@@ -2855,8 +2861,8 @@ fn run_cargo(opts: &Options, cargo_dir: &str, output: &str) -> io::Result<()> {
         .args(&opts.passthrough)
         .env("RUSTC", rustc_program())
         .env("RUSTC_WRAPPER", env::current_exe()?)
-        .env("RUST_TO_LLVM_RUSTC_WRAPPER", "1")
-        .env("RUST_TO_LLVM_WRAPPER_OUT_DIR", &fragment_dir)
+        .env("RUST_TO_MLIR_RUSTC_WRAPPER", "1")
+        .env("RUST_TO_MLIR_WRAPPER_OUT_DIR", &fragment_dir)
         .env("CARGO_TARGET_DIR", work_dir.path().join("cargo-target"))
         .stdout(process::Stdio::null());
 
@@ -2888,7 +2894,7 @@ fn run_cargo(opts: &Options, cargo_dir: &str, output: &str) -> io::Result<()> {
 }
 
 pub fn run_from_env() -> i32 {
-    if env::var_os("RUST_TO_LLVM_RUSTC_WRAPPER").is_some() {
+    if env::var_os("RUST_TO_MLIR_RUSTC_WRAPPER").is_some() {
         return match run_rustc_wrapper() {
             Ok(code) => code,
             Err(err) => {

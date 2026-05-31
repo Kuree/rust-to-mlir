@@ -1,6 +1,6 @@
-# RustToLLVM
+# RustToMLIR
 
-RustToLLVM is an out-of-tree MLIR project for importing Rust MIR, as exposed by
+RustToMLIR is an out-of-tree MLIR project for importing Rust MIR, as exposed by
 `rustc_public`, into a project-owned `rust` MLIR dialect.
 
 The stable boundary is this repository's MLIR dialect and MLIR bytecode/text
@@ -21,16 +21,16 @@ rustup component add rustc-dev llvm-tools-preview rust-src
 cmake -S . -B build -G Ninja \
   -DMLIR_DIR=/usr/lib/llvm-20/lib/cmake/mlir \
   -DLLVM_DIR=/usr/lib/llvm-20/lib/cmake/llvm \
-  -DLLVM_EXTERNAL_LIT=/home/keyi/workspace/rust-to-llvm/env/bin/lit \
-  -DRUST_TO_LLVM_CARGO_EXECUTABLE=/home/keyi/.cargo/bin/cargo \
-  -DRUST_TO_LLVM_RUSTC_EXECUTABLE=/home/keyi/.cargo/bin/rustc
+  -DLLVM_EXTERNAL_LIT=$PWD/env/bin/lit \
+  -DRUST_TO_MLIR_CARGO_EXECUTABLE=/home/keyi/.cargo/bin/cargo \
+  -DRUST_TO_MLIR_RUSTC_EXECUTABLE=/home/keyi/.cargo/bin/rustc
 ninja -C build
 ```
 
 Run tests:
 
 ```sh
-ninja -C build check-rust-to-llvm
+ninja -C build check-rust-to-mlir
 ```
 
 The configured Cargo and rustc paths are also available in lit tests as
@@ -66,14 +66,14 @@ and is tested on Linux/glibc with LLVM/MLIR 20.
 
 ## Execute Rust Source
 
-Use `rust-run` to extract MIR, lower through the RustToLLVM pipeline, and JIT
+Use `rust-run` to extract MIR, lower through the RustToMLIR pipeline, and JIT
 the source crate's `fn main` without writing MLIR to disk:
 
 ```sh
 build/bin/rust-run path/to/input.rs
 ```
 
-The default entry point is the lowered `rust_to_llvm_main::main_typed` symbol.
+The default entry point is the lowered `rust_to_mlir_main::main_typed` symbol.
 If `main` returns `i32`, `rust-run` uses that value as its process status
 instead of printing it. Pass extra rustc flags after `--`.
 

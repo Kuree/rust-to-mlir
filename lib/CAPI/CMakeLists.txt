@@ -1,15 +1,15 @@
-add_library(RustToLLVMRustCAPI SHARED
+add_library(RustToMLIRRustCAPI SHARED
   Rust.cpp
 )
-llvm_update_compile_flags(RustToLLVMRustCAPI)
-target_compile_definitions(RustToLLVMRustCAPI
+llvm_update_compile_flags(RustToMLIRRustCAPI)
+target_compile_definitions(RustToMLIRRustCAPI
   PRIVATE
   MLIR_CAPI_BUILDING_LIBRARY=1
 )
-target_link_libraries(RustToLLVMRustCAPI
+target_link_libraries(RustToMLIRRustCAPI
   PRIVATE
-  RustToLLVMSupport
-  RustToLLVMRustMIRDialect
+  RustToMLIRSupport
+  RustToMLIRRustMIRDialect
   MLIRBytecodeWriter
   MLIRDLTIDialect
   MLIRExecutionEngine
@@ -19,7 +19,7 @@ target_link_libraries(RustToLLVMRustCAPI
   MLIRSupport
   LLVMSupport
 )
-set_target_properties(RustToLLVMRustCAPI PROPERTIES
+set_target_properties(RustToMLIRRustCAPI PROPERTIES
   LIBRARY_OUTPUT_DIRECTORY ${LLVM_LIBRARY_OUTPUT_INTDIR}
   RUNTIME_OUTPUT_DIRECTORY ${LLVM_RUNTIME_OUTPUT_INTDIR}
 )

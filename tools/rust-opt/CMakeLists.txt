@@ -8,7 +8,7 @@ add_mlir_tool(rust-opt
 llvm_update_compile_flags(rust-opt)
 target_link_libraries(rust-opt
   PRIVATE
-  RustToLLVMSupport
+  RustToMLIRSupport
   MLIRIR
   MLIRMlirOptMain
   MLIRSupport

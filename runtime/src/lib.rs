@@ -1,3 +1,9 @@
+//===- lib.rs - RustToMLIR runtime shim -------------------------*- Rust -*-===//
+//
+// SPDX-License-Identifier: Apache-2.0 WITH LLVM-exception
+//
+//===----------------------------------------------------------------------===//
+
 use std::alloc::{alloc, alloc_zeroed, dealloc, handle_alloc_error, realloc, Layout};
 use std::io::{self, Write};
 use std::process;
