@@ -20,10 +20,13 @@
 // LOOP: cf.switch {{.*}} : i64
 
 // FOR-LABEL: func.func @"for_loop_forms::for_range_i32_typed"
-// FOR: arith.extsi {{.*}} : i32 to i64
+// FOR: call @__rust_to_mlir_bridge{{.*}} : (!llvm.ptr, !llvm.ptr) -> ()
+// FOR: llvm.extractvalue {{.*}}[0] : !llvm.struct<(i64, struct<()>, struct<(i32)>)>
 
 // FOR-LABEL: func.func @"for_loop_forms::for_range_u32_typed"
-// FOR: arith.extui {{.*}} : i32 to i64
+// FOR: call @__rust_to_mlir_bridge{{.*}} : (!llvm.ptr, !llvm.ptr) -> ()
+// FOR: llvm.extractvalue {{.*}}[0] : !llvm.struct<(i64, struct<()>, struct<(i32)>)>
 
 // FOR-LABEL: func.func @"for_loop_forms::for_range_inclusive_typed"
-// FOR: arith.extsi {{.*}} : i32 to i64
+// FOR: call @__rust_to_mlir_bridge{{.*}} : (!llvm.ptr, !llvm.ptr) -> ()
+// FOR: llvm.extractvalue {{.*}}[0] : !llvm.struct<(i64, struct<()>, struct<(i32)>)>

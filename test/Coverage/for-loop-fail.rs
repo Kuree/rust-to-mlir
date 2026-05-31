@@ -8,7 +8,8 @@
 // CHECK: rust.typed.field_addr {{.*}}variant_index = 1 : i64
 
 // LOWER-LABEL: func.func @"for_loop_fail::for_loop_typed"
-// LOWER: arith.extsi {{.*}} : i32 to i64
+// LOWER: call @__rust_to_mlir_bridge{{.*}} : (!llvm.ptr, !llvm.ptr) -> ()
+// LOWER: llvm.extractvalue {{.*}}[0] : !llvm.struct<(i64, struct<()>, struct<(i32)>)>
 
 pub fn for_loop(n: i32) -> i32 {
     let mut acc = 0;

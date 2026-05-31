@@ -7,11 +7,11 @@
 #include "mlir/Dialect/RustMIR/Transforms/Passes.h"
 
 #include "RustToMLIR/Support/OpCreateCompat.h"
+#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/Dialect/RustMIR/IR/RustMIRDialect.h"
 #include "mlir/Dialect/RustMIR/IR/RustOps.h"
 #include "mlir/Dialect/RustMIR/IR/RustTypes.h"
 #include "mlir/Dialect/RustTyped/IR/RustTypedOps.h"
-#include "mlir/Dialect/Func/IR/FuncOps.h"
 #include "mlir/IR/Builders.h"
 #include "mlir/IR/BuiltinAttributes.h"
 #include "mlir/IR/BuiltinOps.h"
@@ -20,8 +20,8 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Interfaces/MemorySlotInterfaces.h"
 #include "mlir/Pass/Pass.h"
-#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/Hashing.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/StringExtras.h"
 #include "llvm/ADT/StringMap.h"
@@ -58,6 +58,16 @@ enum class RangeIndexKind {
   FromToInclusive,
   ToInclusive,
 };
+
+bool isOptionAdtType(Type type) {
+  auto adtType = dyn_cast<rust::mir::AdtType>(type);
+  if (!adtType || adtType.getVariants().size() != 2)
+    return false;
+  StringRef name = adtType.getName();
+  return name.starts_with("std::option::Option<") ||
+         name.starts_with("core::option::Option<") ||
+         name == "std::option::Option" || name == "core::option::Option";
+}
 
 StringAttr getAssertMessageAttr(rust::mir::AssertOp assertOp,
                                 OpBuilder &builder) {
@@ -137,6 +147,13 @@ bool isCAbiCall(rust::mir::CallOp call) {
 bool isRustIndexCallName(StringRef rustName) {
   return rustName.ends_with("ops::Index::index") ||
          rustName.ends_with("ops::IndexMut::index_mut");
+}
+
+bool isRangeIntoIteratorCall(rust::mir::CallOp call, StringRef rustName) {
+  if (!call.getRangeKind())
+    return false;
+  return rustName.ends_with("iter::IntoIterator::into_iter") ||
+         rustName.ends_with("iter::traits::collect::IntoIterator::into_iter");
 }
 
 bool isRangeInclusiveNewCallName(StringRef rustName) {
@@ -458,11 +475,11 @@ materializePlaceAddress(rust::mir::PlaceOp place, OpBuilder &builder,
       auto resultType = rust::mir::TypedRefType::get(
           place.getContext(), getPointerMutability(address.getType()),
           sliceType);
-      address = mlir::rust::createOp<rust::mir::SubsliceOp>(
-                    builder, loc, resultType, address,
-                    subslice.getFromIndexAttr(), subslice.getToIndexAttr(),
-                    subslice.getFromEndAttr(), spanAttr)
-                    .getResult();
+      address =
+          mlir::rust::createOp<rust::mir::SubsliceOp>(
+              builder, loc, resultType, address, subslice.getFromIndexAttr(),
+              subslice.getToIndexAttr(), subslice.getFromEndAttr(), spanAttr)
+              .getResult();
       elementType = sliceType;
       continue;
     }
@@ -480,8 +497,8 @@ materializePlaceAddress(rust::mir::PlaceOp place, OpBuilder &builder,
     auto addrType =
         rust::mir::TypedAddrType::get(place.getContext(), fieldType);
     address = mlir::rust::createOp<rust::mir::FieldAddrOp>(
-                  builder, loc, addrType, address, indexAttr,
-                  variantIndexAttr, spanAttr)
+                  builder, loc, addrType, address, indexAttr, variantIndexAttr,
+                  spanAttr)
                   .getAddress();
     elementType = fieldType;
     variantIndexAttr = {};
@@ -728,9 +745,11 @@ std::optional<Value> createTypedUnaryOp(OpBuilder &builder, Location loc,
   return std::nullopt;
 }
 
-std::optional<Value> createCheckedRangeCompare(
-    OpBuilder &builder, Location loc, Value lhs, Value rhs,
-    rust::mir::RustBinaryOpKind op, StringRef message, StringAttr spanAttr) {
+std::optional<Value> createCheckedRangeCompare(OpBuilder &builder, Location loc,
+                                               Value lhs, Value rhs,
+                                               rust::mir::RustBinaryOpKind op,
+                                               StringRef message,
+                                               StringAttr spanAttr) {
   Type boolType = rust::mir::BoolType::get(builder.getContext());
   std::optional<Value> condition =
       createTypedBinaryOp(builder, loc, boolType, lhs, rhs, op, spanAttr);
@@ -757,9 +776,10 @@ std::optional<Value> createRangeField(OpBuilder &builder, Location loc,
       .getResult();
 }
 
-std::optional<Value> createIndexArithmetic(
-    OpBuilder &builder, Location loc, Type indexType, Value lhs, Value rhs,
-    rust::mir::RustBinaryOpKind op, StringAttr spanAttr) {
+std::optional<Value> createIndexArithmetic(OpBuilder &builder, Location loc,
+                                           Type indexType, Value lhs, Value rhs,
+                                           rust::mir::RustBinaryOpKind op,
+                                           StringAttr spanAttr) {
   return createTypedBinaryOp(builder, loc, indexType, lhs, rhs, op, spanAttr);
 }
 
@@ -855,8 +875,8 @@ LogicalResult lowerRangeIndexCall(rust::mir::CallOp op, OpBuilder &builder,
     std::optional<Type> rangeType = inferOperandType(rangeOp, slots);
     if (!rangeType)
       return std::nullopt;
-    range = materializeOperand(rangeOp, builder, loc, slots, *rangeType,
-                               spanAttr);
+    range =
+        materializeOperand(rangeOp, builder, loc, slots, *rangeType, spanAttr);
     return range;
   };
 
@@ -865,14 +885,13 @@ LogicalResult lowerRangeIndexCall(rust::mir::CallOp op, OpBuilder &builder,
                                    rust::mir::RustBinaryOpKind::Le,
                                    "slice index starts after end", spanAttr))
       return failure();
-    if (!createCheckedRangeCompare(builder, loc, end, sourceLen,
-                                   rust::mir::RustBinaryOpKind::Le,
-                                   "range end index out of range for slice",
-                                   spanAttr))
+    if (!createCheckedRangeCompare(
+            builder, loc, end, sourceLen, rust::mir::RustBinaryOpKind::Le,
+            "range end index out of range for slice", spanAttr))
       return failure();
-    std::optional<Value> computedLength = createIndexArithmetic(
-        builder, loc, indexType, end, start, rust::mir::RustBinaryOpKind::Sub,
-        spanAttr);
+    std::optional<Value> computedLength =
+        createIndexArithmetic(builder, loc, indexType, end, start,
+                              rust::mir::RustBinaryOpKind::Sub, spanAttr);
     if (!computedLength)
       return failure();
     length = *computedLength;
@@ -906,14 +925,13 @@ LogicalResult lowerRangeIndexCall(rust::mir::CallOp op, OpBuilder &builder,
     if (!rangeStart)
       return op.emitError("failed to extract range start");
     start = *rangeStart;
-    if (!createCheckedRangeCompare(builder, loc, start, sourceLen,
-                                   rust::mir::RustBinaryOpKind::Le,
-                                   "range start index out of range for slice",
-                                   spanAttr))
+    if (!createCheckedRangeCompare(
+            builder, loc, start, sourceLen, rust::mir::RustBinaryOpKind::Le,
+            "range start index out of range for slice", spanAttr))
       return op.emitError("failed to lower range start bounds check");
-    std::optional<Value> computedLength = createIndexArithmetic(
-        builder, loc, indexType, sourceLen, start,
-        rust::mir::RustBinaryOpKind::Sub, spanAttr);
+    std::optional<Value> computedLength =
+        createIndexArithmetic(builder, loc, indexType, sourceLen, start,
+                              rust::mir::RustBinaryOpKind::Sub, spanAttr);
     if (!computedLength)
       return op.emitError("failed to compute range length");
     length = *computedLength;
@@ -927,10 +945,9 @@ LogicalResult lowerRangeIndexCall(rust::mir::CallOp op, OpBuilder &builder,
         createRangeField(builder, loc, *rangeValue, 0, indexType, spanAttr);
     if (!end)
       return op.emitError("failed to extract range end");
-    if (!createCheckedRangeCompare(builder, loc, *end, sourceLen,
-                                   rust::mir::RustBinaryOpKind::Le,
-                                   "range end index out of range for slice",
-                                   spanAttr))
+    if (!createCheckedRangeCompare(
+            builder, loc, *end, sourceLen, rust::mir::RustBinaryOpKind::Le,
+            "range end index out of range for slice", spanAttr))
       return op.emitError("failed to lower range end bounds check");
     length = *end;
     break;
@@ -950,19 +967,18 @@ LogicalResult lowerRangeIndexCall(rust::mir::CallOp op, OpBuilder &builder,
                                    rust::mir::RustBinaryOpKind::Le,
                                    "slice index starts after end", spanAttr))
       return op.emitError("failed to lower inclusive range order check");
-    if (!createCheckedRangeCompare(builder, loc, *rangeEnd, sourceLen,
-                                   rust::mir::RustBinaryOpKind::Lt,
-                                   "range end index out of range for slice",
-                                   spanAttr))
+    if (!createCheckedRangeCompare(
+            builder, loc, *rangeEnd, sourceLen, rust::mir::RustBinaryOpKind::Lt,
+            "range end index out of range for slice", spanAttr))
       return op.emitError("failed to lower inclusive range bounds check");
-    std::optional<Value> endDelta = createIndexArithmetic(
-        builder, loc, indexType, *rangeEnd, start,
-        rust::mir::RustBinaryOpKind::Sub, spanAttr);
+    std::optional<Value> endDelta =
+        createIndexArithmetic(builder, loc, indexType, *rangeEnd, start,
+                              rust::mir::RustBinaryOpKind::Sub, spanAttr);
     if (!endDelta)
       return op.emitError("failed to compute inclusive range delta");
-    std::optional<Value> computedLength = createIndexArithmetic(
-        builder, loc, indexType, *endDelta, one,
-        rust::mir::RustBinaryOpKind::Add, spanAttr);
+    std::optional<Value> computedLength =
+        createIndexArithmetic(builder, loc, indexType, *endDelta, one,
+                              rust::mir::RustBinaryOpKind::Add, spanAttr);
     if (!computedLength)
       return op.emitError("failed to compute inclusive range length");
     length = *computedLength;
@@ -976,14 +992,13 @@ LogicalResult lowerRangeIndexCall(rust::mir::CallOp op, OpBuilder &builder,
         createRangeField(builder, loc, *rangeValue, 0, indexType, spanAttr);
     if (!end)
       return op.emitError("failed to extract inclusive range end");
-    if (!createCheckedRangeCompare(builder, loc, *end, sourceLen,
-                                   rust::mir::RustBinaryOpKind::Lt,
-                                   "range end index out of range for slice",
-                                   spanAttr))
+    if (!createCheckedRangeCompare(
+            builder, loc, *end, sourceLen, rust::mir::RustBinaryOpKind::Lt,
+            "range end index out of range for slice", spanAttr))
       return op.emitError("failed to lower inclusive range end bounds check");
-    std::optional<Value> computedLength = createIndexArithmetic(
-        builder, loc, indexType, *end, one, rust::mir::RustBinaryOpKind::Add,
-        spanAttr);
+    std::optional<Value> computedLength =
+        createIndexArithmetic(builder, loc, indexType, *end, one,
+                              rust::mir::RustBinaryOpKind::Add, spanAttr);
     if (!computedLength)
       return op.emitError("failed to compute inclusive range length");
     length = *computedLength;
@@ -991,15 +1006,47 @@ LogicalResult lowerRangeIndexCall(rust::mir::CallOp op, OpBuilder &builder,
   }
   }
 
-  Value result = mlir::rust::createOp<rust::mir::SliceRangeOp>(
-                     builder, loc, *destinationType, *source, start, length,
-                     spanAttr)
-                     .getResult();
+  Value result =
+      mlir::rust::createOp<rust::mir::SliceRangeOp>(
+          builder, loc, *destinationType, *source, start, length, spanAttr)
+          .getResult();
   std::optional<PlaceAddress> dest =
       materializePlaceAddress(destination, builder, loc, slots, spanAttr);
   if (!dest)
     return op.emitError("failed to materialize range index destination");
   createStore(builder, loc, result, dest->slot);
+  mlir::rust::createOp<rust::mir::TypedGotoOp>(
+      builder, loc, builder.getI64IntegerAttr(static_cast<int64_t>(target)),
+      spanAttr);
+  return success();
+}
+
+LogicalResult lowerRangeIntoIteratorCall(rust::mir::CallOp op,
+                                         OpBuilder &builder,
+                                         llvm::StringMap<LocalSlot> &slots,
+                                         rust::mir::PlaceOp destination,
+                                         uint64_t target) {
+  Location loc = op.getLoc();
+  StringAttr spanAttr = op.getSpanAttr();
+  Operation *rangeOp = childAt(op, 2);
+  if (!rangeOp)
+    return op.emitError("expected range into_iter argument");
+
+  std::optional<Type> destinationType = inferPlaceType(destination, slots);
+  if (!destinationType)
+    return op.emitError("failed to infer range into_iter destination type");
+
+  std::optional<Value> range = materializeOperand(rangeOp, builder, loc, slots,
+                                                  *destinationType, spanAttr);
+  if (!range)
+    return op.emitError("failed to materialize range into_iter argument");
+
+  std::optional<PlaceAddress> dest =
+      materializePlaceAddress(destination, builder, loc, slots, spanAttr);
+  if (!dest)
+    return op.emitError("failed to materialize range into_iter destination");
+
+  createStore(builder, loc, *range, dest->slot);
   mlir::rust::createOp<rust::mir::TypedGotoOp>(
       builder, loc, builder.getI64IntegerAttr(static_cast<int64_t>(target)),
       spanAttr);
@@ -1082,17 +1129,17 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
                << rust::mir::stringifyRustBinaryOpKind(op);
       }
 
-      Value tuple = mlir::rust::createOp<rust::mir::MakeAggregateOp>(
-                        builder, loc, dest->elementType,
-                        ValueRange{value, overflow}, IntegerAttr(),
-                        StringAttr(), spanAttr)
-                        .getResult();
+      Value tuple =
+          mlir::rust::createOp<rust::mir::MakeAggregateOp>(
+              builder, loc, dest->elementType, ValueRange{value, overflow},
+              IntegerAttr(), StringAttr(), spanAttr)
+              .getResult();
       createStore(builder, loc, tuple, dest->slot);
       return success();
     }
 
-    std::optional<Value> result = createTypedBinaryOp(
-        builder, loc, resultType, *lhs, *rhs, op, spanAttr);
+    std::optional<Value> result =
+        createTypedBinaryOp(builder, loc, resultType, *lhs, *rhs, op, spanAttr);
     if (!result)
       return assign.emitError("unsupported binary op: ")
              << rust::mir::stringifyRustBinaryOpKind(op);
@@ -1155,7 +1202,8 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
       }
     }
 
-    Type operandExpectedType = inferOperandType(operandOp, slots).value_or(Type());
+    Type operandExpectedType =
+        inferOperandType(operandOp, slots).value_or(Type());
     std::optional<Value> operand =
         materializeOperand(operandOp, builder, assign.getLoc(), slots,
                            operandExpectedType, assign.getSpanAttr());
@@ -1173,8 +1221,8 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
       }
 
       Value result = mlir::rust::createOp<rust::mir::IntCastOp>(
-                         builder, assign.getLoc(), dest->elementType,
-                         *operand, assign.getSpanAttr())
+                         builder, assign.getLoc(), dest->elementType, *operand,
+                         assign.getSpanAttr())
                          .getResult();
       createStore(builder, assign.getLoc(), result, dest->slot);
       return success();
@@ -1198,8 +1246,7 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
 
       Value result = mlir::rust::createOp<rust::mir::NumericCastOp>(
                          builder, assign.getLoc(), dest->elementType,
-                         cast.getCastKindAttr(), *operand,
-                         assign.getSpanAttr())
+                         cast.getCastKindAttr(), *operand, assign.getSpanAttr())
                          .getResult();
       createStore(builder, assign.getLoc(), result, dest->slot);
       return success();
@@ -1208,10 +1255,9 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     if (cast.getCastKind() == rust::mir::RustCastKind::PointerCoercion) {
       Type sourcePointee = getPointeeType((*operand).getType());
       Type destPointee = getPointeeType(dest->elementType);
-      auto sourceArray = dyn_cast_or_null<rust::mir::TypedArrayType>(
-          sourcePointee);
-      auto destSlice = dyn_cast_or_null<rust::mir::TypedSliceType>(
-          destPointee);
+      auto sourceArray =
+          dyn_cast_or_null<rust::mir::TypedArrayType>(sourcePointee);
+      auto destSlice = dyn_cast_or_null<rust::mir::TypedSliceType>(destPointee);
       if (sourceArray && destSlice &&
           sourceArray.getElementType() == destSlice.getElementType()) {
         Value result = mlir::rust::createOp<rust::mir::SliceFromArrayOp>(
@@ -1277,11 +1323,11 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     for (auto indexedOperand : llvm::enumerate(operandBlock)) {
       Operation *operandOp = &indexedOperand.value();
       Type expectedType =
-          variantIndex ? getVariantElementType(adtType, *variantIndex,
-                                               indexedOperand.index(), builder)
-                       : getAggregateElementType(dest->elementType,
-                                                 indexedOperand.index(),
-                                                 builder);
+          variantIndex
+              ? getVariantElementType(adtType, *variantIndex,
+                                      indexedOperand.index(), builder)
+              : getAggregateElementType(dest->elementType,
+                                        indexedOperand.index(), builder);
       if (!expectedType)
         expectedType = inferOperandType(operandOp, slots).value_or(Type());
       if (!expectedType)
@@ -1348,11 +1394,10 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
         operands.push_back(*operand);
     }
 
-    Value result =
-        mlir::rust::createOp<rust::mir::MakeAggregateOp>(
-            builder, assign.getLoc(), dest->elementType, operands,
-            IntegerAttr(), StringAttr(), assign.getSpanAttr())
-            .getResult();
+    Value result = mlir::rust::createOp<rust::mir::MakeAggregateOp>(
+                       builder, assign.getLoc(), dest->elementType, operands,
+                       IntegerAttr(), StringAttr(), assign.getSpanAttr())
+                       .getResult();
     createStore(builder, assign.getLoc(), result, dest->slot);
     return success();
   }
@@ -1450,8 +1495,8 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
       StringAttr debugAttr =
           builder.getStringAttr(std::to_string(arrayType.getLength()));
       Value result = mlir::rust::createOp<rust::mir::TypedConstOp>(
-                         builder, assign.getLoc(), dest->elementType,
-                         valueAttr, debugAttr, assign.getSpanAttr())
+                         builder, assign.getLoc(), dest->elementType, valueAttr,
+                         debugAttr, assign.getSpanAttr())
                          .getResult();
       createStore(builder, assign.getLoc(), result, dest->slot);
       return success();
@@ -1531,6 +1576,9 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
     if (isRangeInclusiveNewCallName(rustNameRef))
       return lowerRangeInclusiveNewCall(op, builder, slots, destination,
                                         *target);
+    if (isRangeIntoIteratorCall(op, rustNameRef))
+      return lowerRangeIntoIteratorCall(op, builder, slots, destination,
+                                        *target);
     if (std::optional<RangeIndexKind> rangeKind =
             getRangeIndexKind(op, rustNameRef))
       return lowerRangeIndexCall(op, builder, slots, destination, *target,
@@ -1557,7 +1605,10 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
   std::optional<Type> destinationType = inferPlaceType(destination, slots);
   if (!destinationType)
     return op.emitError("failed to infer call destination type");
-  if (!isa<rust::mir::UnitType, rust::mir::NeverType>(*destinationType))
+  StringAttr bridgeSymbol = op.getCalleeBridgeSymbolAttr();
+  bool bridgeUsesOutPointer = bridgeSymbol && isOptionAdtType(*destinationType);
+  if (!isa<rust::mir::UnitType, rust::mir::NeverType>(*destinationType) &&
+      !bridgeUsesOutPointer)
     resultTypes.push_back(*destinationType);
 
   if (!rustName) {
@@ -1578,7 +1629,8 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
 
     auto calleeType = dyn_cast<FunctionType>((*callee).getType());
     if (!calleeType)
-      return op.emitError("expected indirect call callee to have function type");
+      return op.emitError(
+          "expected indirect call callee to have function type");
     if (calleeType != expectedCalleeType)
       return op.emitError("indirect call callee type mismatch, expected ")
              << expectedCalleeType << ", got " << calleeType;
@@ -1601,23 +1653,28 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
   }
 
   StringRef rustNameRef(*rustName);
-  StringAttr bridgeSymbol = op.getCalleeBridgeSymbolAttr();
+  if (bridgeUsesOutPointer) {
+    std::optional<PlaceAddress> dest =
+        materializePlaceAddress(destination, builder, loc, slots, spanAttr);
+    if (!dest)
+      return op.emitError("failed to materialize bridge output destination");
+    args.push_back(dest->slot);
+  }
   bool isCAbi = bridgeSymbol || isCAbiCall(op);
   rust::mir::RustAbiAttr abiAttr = rust::mir::RustAbiAttr::get(
       op.getContext(),
       isCAbi ? rust::mir::RustAbi::C : rust::mir::RustAbi::Rust);
   std::string callee = bridgeSymbol ? bridgeSymbol.getValue().str()
-                                    : isCAbi ? getCAbiSymbol(rustNameRef)
-                                             : getTypedSymbol(rustNameRef);
+                       : isCAbi     ? getCAbiSymbol(rustNameRef)
+                                    : getTypedSymbol(rustNameRef);
   auto typedCall = mlir::rust::createOp<rust::mir::TypedCallOp>(
       builder, loc, resultTypes,
       FlatSymbolRefAttr::get(op.getContext(), callee), args,
       builder.getStringAttr(*rustName), abiAttr, op.getCalleeDefAttr(),
       op.getCalleeTypeAttr(), op.getCalleeGenericArgsAttr(),
       op.getCalleeInputsAttr(), op.getCalleeOutputAttr(),
-      op.getCalleeBridgeSymbolAttr(),
-      op.getCalleeCVariadicAttr(), op.getTargetAttr(), op.getUnwindAttr(),
-      spanAttr);
+      op.getCalleeBridgeSymbolAttr(), op.getCalleeCVariadicAttr(),
+      op.getTargetAttr(), op.getUnwindAttr(), spanAttr);
 
   if (!resultTypes.empty()) {
     std::optional<PlaceAddress> dest =

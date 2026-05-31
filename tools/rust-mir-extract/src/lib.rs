@@ -586,7 +586,14 @@ struct CAbiBridge {
     rust_name: String,
     call_path: String,
     arg_types: Vec<String>,
-    result_type: Option<String>,
+    result: BridgeResult,
+}
+
+#[derive(Clone, Eq, PartialEq)]
+enum BridgeResult {
+    Void,
+    Direct(String),
+    OptionOutPointer { payload_type: String },
 }
 
 struct TargetInfo {
@@ -914,16 +921,24 @@ impl MirType {
     }
 
     fn adt_from_public(def: AdtDef, args: &GenericArgs, building: &mut Vec<String>) -> Self {
-        // Ranges keep a flat usize-tuple shape so existing slice-index lowering
-        // (which reads start/end as usize fields) is preserved. Detection is by
-        // the structured def path, not substring matching of a Debug string.
+        // Ranges keep a flat tuple shape so existing slice-index lowering can
+        // read start/end fields directly, while still preserving the actual
+        // range element type for iterator calls.
         if let Some(field_count) = range_field_count(&def.name()) {
             // A fieldless range (`..`) is zero-sized; model it as unit rather
             // than an empty tuple (which has no round-trippable spelling).
             if field_count == 0 {
                 return Self::Unit;
             }
-            return Self::Tuple((0..field_count).map(|_| Self::Int("usize")).collect());
+            let field_ty = args
+                .0
+                .iter()
+                .find_map(|arg| match arg {
+                    GenericArgKind::Type(ty) => Some(Self::from_public_rec(*ty, building)),
+                    _ => None,
+                })
+                .unwrap_or(Self::Int("usize"));
+            return Self::Tuple((0..field_count).map(|_| field_ty.clone()).collect());
         }
 
         let name = adt_key(&def, args);
@@ -1172,10 +1187,14 @@ impl CAbiBridge {
             .map(|arg| rust_source_type(arg.ty(locals).ok()?))
             .collect::<Option<Vec<_>>>()?;
         let destination_ty = destination.ty(locals).ok()?;
-        let result_type = if is_unit_type(destination_ty) {
-            None
+        let result = if is_unit_type(destination_ty) {
+            BridgeResult::Void
+        } else if let Some(payload_ty) = option_payload_type(destination_ty) {
+            BridgeResult::OptionOutPointer {
+                payload_type: rust_source_type(payload_ty)?,
+            }
         } else {
-            Some(rust_source_type(destination_ty)?)
+            BridgeResult::Direct(rust_source_type(destination_ty)?)
         };
         let call_path = rust_bridge_call_path(rust_name, &arg_types)?;
 
@@ -1184,8 +1203,12 @@ impl CAbiBridge {
             rust_name: rust_name.to_string(),
             call_path,
             arg_types,
-            result_type,
+            result,
         })
+    }
+
+    fn uses_option_out_pointer(&self) -> bool {
+        matches!(self.result, BridgeResult::OptionOutPointer { .. })
     }
 
     fn source(&self) -> String {
@@ -1203,15 +1226,50 @@ impl CAbiBridge {
             source.push_str(": ");
             source.push_str(ty);
         }
+        if let BridgeResult::OptionOutPointer { payload_type } = &self.result {
+            if !self.arg_types.is_empty() {
+                source.push_str(", ");
+            }
+            source.push_str("__out: *mut __RustToMlirOption<");
+            source.push_str(payload_type);
+            source.push('>');
+        }
         source.push(')');
-        if let Some(result_type) = &self.result_type {
+        if let BridgeResult::Direct(result_type) = &self.result {
             source.push_str(" -> ");
             source.push_str(result_type);
         }
         source.push_str(" {\n    ");
-        if self.result_type.is_none() {
+
+        if let BridgeResult::OptionOutPointer { .. } = &self.result {
+            source.push_str("let __value = ");
+            self.push_call_expression(&mut source);
+            source.push_str(";\n");
+            source.push_str("    let __bridge_value = match __value {\n");
+            source.push_str("        ::std::option::Option::None => __RustToMlirOption::none(),\n");
+            source.push_str(
+                "        ::std::option::Option::Some(__some) => __RustToMlirOption::some(__some),\n",
+            );
+            source.push_str("    };\n");
+            source.push_str("    unsafe { ::core::ptr::write(__out, __bridge_value); }\n");
+            source.push_str("}\n");
+            return source;
+        }
+
+        if matches!(self.result, BridgeResult::Void) {
             source.push_str("let _ = ");
         }
+        self.push_call_expression(&mut source);
+        if matches!(self.result, BridgeResult::Void) {
+            source.push_str(";\n");
+        } else {
+            source.push('\n');
+        }
+        source.push_str("}\n");
+        source
+    }
+
+    fn push_call_expression(&self, source: &mut String) {
         source.push_str(&self.call_path);
         source.push('(');
         for index in 0..self.arg_types.len() {
@@ -1221,13 +1279,7 @@ impl CAbiBridge {
             source.push_str("__arg");
             source.push_str(&index.to_string());
         }
-        if self.result_type.is_none() {
-            source.push_str(");\n");
-        } else {
-            source.push_str(")\n");
-        }
-        source.push_str("}\n");
-        source
+        source.push(')');
     }
 }
 
@@ -1319,6 +1371,23 @@ fn rust_source_adt_type(def: AdtDef, args: &GenericArgs) -> Option<String> {
     } else {
         Some(format!("::{base}<{}>", args.join(", ")))
     }
+}
+
+fn option_payload_type(ty: Ty) -> Option<Ty> {
+    let TyKind::RigidTy(RigidTy::Adt(def, args)) = ty.kind() else {
+        return None;
+    };
+
+    let name = def.name();
+    let base = name.split('<').next().unwrap_or(&name);
+    if base != "std::option::Option" && base != "core::option::Option" {
+        return None;
+    }
+
+    args.0.iter().find_map(|arg| match arg {
+        GenericArgKind::Type(ty) => Some(*ty),
+        _ => None,
+    })
 }
 
 fn rust_source_type(ty: Ty) -> Option<String> {
@@ -1486,6 +1555,42 @@ impl MirProgram {
         let mut source = String::new();
         source.push_str("#![allow(improper_ctypes_definitions, non_snake_case)]\n");
         source.push_str("extern crate alloc;\n\n");
+        if bridges.iter().any(CAbiBridge::uses_option_out_pointer) {
+            source.push_str(
+                r#"#[repr(C)]
+pub struct __RustToMlirTuple0;
+
+#[repr(C)]
+pub struct __RustToMlirTuple1<T>(pub T);
+
+#[repr(C)]
+pub struct __RustToMlirOption<T> {
+    pub tag: usize,
+    pub none: __RustToMlirTuple0,
+    pub some: ::core::mem::MaybeUninit<__RustToMlirTuple1<T>>,
+}
+
+impl<T> __RustToMlirOption<T> {
+    fn none() -> Self {
+        Self {
+            tag: 0,
+            none: __RustToMlirTuple0,
+            some: ::core::mem::MaybeUninit::uninit(),
+        }
+    }
+
+    fn some(value: T) -> Self {
+        Self {
+            tag: 1,
+            none: __RustToMlirTuple0,
+            some: ::core::mem::MaybeUninit::new(__RustToMlirTuple1(value)),
+        }
+    }
+}
+
+"#,
+            );
+        }
         for bridge in bridges {
             source.push_str("// ");
             source.push_str(&bridge.rust_name);
