@@ -26,7 +26,7 @@ jobs:
 
     steps:
       - name: Check out repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6
 
       - name: Install LLVM/MLIR dependencies
         run: |
@@ -95,11 +95,13 @@ jobs:
         run: ninja -C build check-rust-to-mlir
 
       - name: Build wheel
+        if: matrix.llvm-version == '22'
         run: ninja -C build wheel
 
       - name: Upload wheel
-        uses: actions/upload-artifact@v4
+        if: matrix.llvm-version == '22'
+        uses: actions/upload-artifact@v6
         with:
-          name: rust-to-mlir-wheel-llvm${{ matrix.llvm-version }}
+          name: rust-to-mlir-wheel
           path: dist/*.whl
           if-no-files-found: error
