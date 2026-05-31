@@ -20,6 +20,7 @@
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/APInt.h"
+#include "llvm/Support/Error.h"
 
 namespace mlir {
 #define GEN_PASS_DEF_CONVERTRUSTTYPEDTOARITHPASS
@@ -65,6 +66,13 @@ public:
     addConversion([this](rustmir::IntType type) -> Type {
       return IntegerType::get(this->context,
                               type.getBitWidth(this->pointerWidth));
+    });
+    addConversion([this](rustmir::FloatType type) -> Type {
+      if (type.getBitWidth() == 32)
+        return Float32Type::get(this->context);
+      if (type.getBitWidth() == 64)
+        return Float64Type::get(this->context);
+      return Type();
     });
     addConversion([this](rustmir::SlotType type) -> Type {
       Type elementType = convertType(type.getElementType());
@@ -141,16 +149,42 @@ bool isIntegerLikeAfterConversion(Type type, const TypeConverter &converter) {
   return converted && isa<IntegerType>(converted);
 }
 
+bool isFloatLikeAfterConversion(Type type, const TypeConverter &converter) {
+  Type converted = converter.convertType(type);
+  return converted && isa<FloatType>(converted);
+}
+
 bool isLowerableConst(rustmir::TypedConstOp op,
                       const TypeConverter &converter) {
-  return isIntegerLikeAfterConversion(op.getResult().getType(), converter);
+  return isIntegerLikeAfterConversion(op.getResult().getType(), converter) ||
+         isFloatLikeAfterConversion(op.getResult().getType(), converter);
 }
 
 template <typename OpT>
-bool isLowerableBinaryOp(OpT op, const TypeConverter &converter) {
-  return isIntegerLikeAfterConversion(op.getLhs().getType(), converter) &&
-         isIntegerLikeAfterConversion(op.getRhs().getType(), converter) &&
-         isIntegerLikeAfterConversion(op.getResult().getType(), converter);
+bool isLowerableIntegerBinaryOp(OpT op, const TypeConverter &converter) {
+  Type lhsType = converter.convertType(op.getLhs().getType());
+  Type rhsType = converter.convertType(op.getRhs().getType());
+  Type resultType = converter.convertType(op.getResult().getType());
+  return isa_and_nonnull<IntegerType>(lhsType) && lhsType == rhsType &&
+         lhsType == resultType;
+}
+
+template <typename OpT>
+bool isLowerableFloatBinaryOp(OpT op, const TypeConverter &converter) {
+  Type lhsType = converter.convertType(op.getLhs().getType());
+  Type rhsType = converter.convertType(op.getRhs().getType());
+  Type resultType = converter.convertType(op.getResult().getType());
+  return isa_and_nonnull<FloatType>(lhsType) && lhsType == rhsType &&
+         lhsType == resultType;
+}
+
+template <typename OpT>
+bool isLowerableIntegerCompareOp(OpT op, const TypeConverter &converter) {
+  Type lhsType = converter.convertType(op.getLhs().getType());
+  Type rhsType = converter.convertType(op.getRhs().getType());
+  Type resultType = converter.convertType(op.getResult().getType());
+  return isa_and_nonnull<IntegerType>(lhsType) && lhsType == rhsType &&
+         resultType && resultType.isSignlessInteger(1);
 }
 
 template <typename OpT>
@@ -165,9 +199,17 @@ bool isLowerableCheckedBinaryOp(OpT op, const TypeConverter &converter) {
 }
 
 template <typename OpT>
-bool isLowerableUnaryOp(OpT op, const TypeConverter &converter) {
-  return isIntegerLikeAfterConversion(op.getInput().getType(), converter) &&
-         isIntegerLikeAfterConversion(op.getResult().getType(), converter);
+bool isLowerableIntegerUnaryOp(OpT op, const TypeConverter &converter) {
+  Type inputType = converter.convertType(op.getInput().getType());
+  Type resultType = converter.convertType(op.getResult().getType());
+  return isa_and_nonnull<IntegerType>(inputType) && inputType == resultType;
+}
+
+template <typename OpT>
+bool isLowerableFloatUnaryOp(OpT op, const TypeConverter &converter) {
+  Type inputType = converter.convertType(op.getInput().getType());
+  Type resultType = converter.convertType(op.getResult().getType());
+  return isa_and_nonnull<FloatType>(inputType) && inputType == resultType;
 }
 
 bool isLowerableIntCast(rustmir::IntCastOp op,
@@ -227,6 +269,31 @@ std::optional<llvm::APInt> parseIntegerLiteral(StringRef text, unsigned width) {
   return value;
 }
 
+std::optional<std::string> parseFloatLiteralText(StringRef text) {
+  text = text.trim();
+  if (text.consume_front("const"))
+    text = text.trim();
+
+  size_t space = text.find_first_of(" \t\r\n");
+  if (space != StringRef::npos)
+    text = text.take_front(space);
+
+  std::string normalized;
+  normalized.reserve(text.size());
+  for (char c : text)
+    if (c != '_')
+      normalized.push_back(c);
+
+  text = StringRef(normalized).trim();
+  if (text.consume_back("f16") || text.consume_back("f32") ||
+      text.consume_back("f64") || text.consume_back("f128"))
+    text = text.trim();
+
+  if (text.empty())
+    return std::nullopt;
+  return text.str();
+}
+
 TypedAttr buildIntegerAttr(rustmir::TypedConstOp op, IntegerType resultType) {
   unsigned width = resultType.getWidth();
   if (auto integerAttr = dyn_cast_or_null<IntegerAttr>(op.getValueAttr())) {
@@ -248,6 +315,33 @@ TypedAttr buildIntegerAttr(rustmir::TypedConstOp op, IntegerType resultType) {
   if (!value)
     return {};
   return cast<TypedAttr>(IntegerAttr::get(resultType, *value));
+}
+
+std::optional<llvm::APFloat> buildFloatValue(rustmir::TypedConstOp op,
+                                             FloatType resultType) {
+  if (auto floatAttr = dyn_cast_or_null<FloatAttr>(op.getValueAttr())) {
+    llvm::APFloat value = floatAttr.getValue();
+    bool losesInfo = false;
+    value.convert(resultType.getFloatSemantics(),
+                  llvm::APFloat::rmNearestTiesToEven, &losesInfo);
+    return value;
+  }
+
+  std::optional<StringRef> debug = op.getDebug();
+  if (!debug)
+    return {};
+
+  std::optional<std::string> value = parseFloatLiteralText(*debug);
+  if (!value)
+    return {};
+  llvm::APFloat apValue(resultType.getFloatSemantics());
+  llvm::Expected<llvm::APFloat::opStatus> status =
+      apValue.convertFromString(*value, llvm::APFloat::rmNearestTiesToEven);
+  if (!status) {
+    llvm::consumeError(status.takeError());
+    return {};
+  }
+  return apValue;
 }
 
 Value createIntegerConstant(OpBuilder &builder, Location loc, IntegerType type,
@@ -281,26 +375,37 @@ struct TypedConstOpConversion
                   ConversionPatternRewriter &rewriter) const final {
     Type convertedType =
         getTypeConverter()->convertType(op.getResult().getType());
-    auto resultType = dyn_cast_or_null<IntegerType>(convertedType);
-    if (!resultType)
+    auto integerType = dyn_cast_or_null<IntegerType>(convertedType);
+    auto floatType = dyn_cast_or_null<FloatType>(convertedType);
+    if (!integerType && !floatType)
       return failure();
 
     if (op.getDebug() && op.getDebug()->trim() == "uninit") {
       Value poison = mlir::rust::createOp<ub::PoisonOp>(
-                         rewriter, op.getLoc(), resultType,
+                         rewriter, op.getLoc(), convertedType,
                          ub::PoisonAttr::get(rewriter.getContext()))
                          .getResult();
       rewriter.replaceOp(op, poison);
       return success();
     }
 
-    TypedAttr value = buildIntegerAttr(op, resultType);
-    if (!value)
-      return op.emitError("expected an integer or boolean rust.typed.const");
-
-    Value constant = mlir::rust::createOp<arith::ConstantOp>(
-                         rewriter, op.getLoc(), resultType, value)
-                         .getResult();
+    Value constant;
+    if (integerType) {
+      TypedAttr value = buildIntegerAttr(op, integerType);
+      if (!value)
+        return op.emitError("expected an integer or boolean rust.typed.const");
+      constant = mlir::rust::createOp<arith::ConstantOp>(
+                     rewriter, op.getLoc(), convertedType, value)
+                     .getResult();
+    } else {
+      std::optional<llvm::APFloat> value = buildFloatValue(op, floatType);
+      if (!value)
+        return op.emitError("expected a floating-point rust.typed.const");
+      auto attr = cast<TypedAttr>(FloatAttr::get(floatType, *value));
+      constant = mlir::rust::createOp<arith::ConstantOp>(
+                     rewriter, op.getLoc(), convertedType, attr)
+                     .getResult();
+    }
     rewriter.replaceOp(op, constant);
     return success();
   }
@@ -313,7 +418,27 @@ struct SimpleBinaryOpConversion : public OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    if (!this->getTypeConverter()->convertType(op.getResult().getType()))
+    if (!isa_and_nonnull<IntegerType>(
+            this->getTypeConverter()->convertType(op.getResult().getType())))
+      return failure();
+    Value replacement =
+        mlir::rust::createOp<TargetOp>(rewriter, op.getLoc(), adaptor.getLhs(),
+                                       adaptor.getRhs())
+            .getResult();
+    rewriter.replaceOp(op, replacement);
+    return success();
+  }
+};
+
+template <typename SourceOp, typename TargetOp>
+struct SimpleFloatBinaryOpConversion : public OpConversionPattern<SourceOp> {
+  using OpConversionPattern<SourceOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    if (!isa_and_nonnull<FloatType>(
+            this->getTypeConverter()->convertType(op.getResult().getType())))
       return failure();
     Value replacement =
         mlir::rust::createOp<TargetOp>(rewriter, op.getLoc(), adaptor.getLhs(),
@@ -331,7 +456,8 @@ struct DivOpConversion : public OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    if (!this->getTypeConverter()->convertType(op.getResult().getType()))
+    if (!isa_and_nonnull<IntegerType>(
+            this->getTypeConverter()->convertType(op.getResult().getType())))
       return failure();
     Value replacement =
         isSignedRustInteger(op.getLhs().getType())
@@ -353,7 +479,8 @@ struct RemOpConversion : public OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    if (!this->getTypeConverter()->convertType(op.getResult().getType()))
+    if (!isa_and_nonnull<IntegerType>(
+            this->getTypeConverter()->convertType(op.getResult().getType())))
       return failure();
     Value replacement =
         isSignedRustInteger(op.getLhs().getType())
@@ -375,7 +502,8 @@ struct ShrOpConversion : public OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    if (!this->getTypeConverter()->convertType(op.getResult().getType()))
+    if (!isa_and_nonnull<IntegerType>(
+            this->getTypeConverter()->convertType(op.getResult().getType())))
       return failure();
     Value replacement =
         isSignedRustInteger(op.getLhs().getType())
@@ -398,7 +526,10 @@ struct CompareOpConversion : public OpConversionPattern<SourceOp> {
   LogicalResult
   matchAndRewrite(SourceOp op, typename SourceOp::Adaptor adaptor,
                   ConversionPatternRewriter &rewriter) const final {
-    if (!this->getTypeConverter()->convertType(op.getResult().getType()))
+    if (!isa_and_nonnull<IntegerType>(
+            this->getTypeConverter()->convertType(op.getLhs().getType())) ||
+        !isa_and_nonnull<IntegerType>(
+            this->getTypeConverter()->convertType(op.getResult().getType())))
       return failure();
     arith::CmpIPredicate predicate = isSignedRustInteger(op.getLhs().getType())
                                          ? signedPredicate
@@ -592,6 +723,24 @@ struct NegOpConversion : public OpConversionPattern<rustmir::NegOp> {
                               llvm::APInt::getZero(resultType.getWidth()));
     Value replacement = mlir::rust::createOp<arith::SubIOp>(
                             rewriter, op.getLoc(), zero, adaptor.getInput())
+                            .getResult();
+    rewriter.replaceOp(op, replacement);
+    return success();
+  }
+};
+
+struct FloatNegOpConversion : public OpConversionPattern<rustmir::NegOp> {
+  using OpConversionPattern<rustmir::NegOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::NegOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    if (!isa_and_nonnull<FloatType>(
+            getTypeConverter()->convertType(op.getResult().getType())))
+      return failure();
+
+    Value replacement = mlir::rust::createOp<arith::NegFOp>(
+                            rewriter, op.getLoc(), adaptor.getInput())
                             .getResult();
     rewriter.replaceOp(op, replacement);
     return success();
@@ -976,18 +1125,44 @@ struct TypedCallConversion : public OpConversionPattern<rustmir::TypedCallOp> {
 };
 
 template <typename OpT>
-void addBinaryOpLegality(ConversionTarget &target,
-                         const TypeConverter *typeConverter) {
+void addIntegerBinaryOpLegality(ConversionTarget &target,
+                                const TypeConverter *typeConverter) {
   target.addDynamicallyLegalOp<OpT>([typeConverter](OpT op) {
-    return !isLowerableBinaryOp(op, *typeConverter);
+    return !isLowerableIntegerBinaryOp(op, *typeConverter);
   });
 }
 
 template <typename OpT>
-void addUnaryOpLegality(ConversionTarget &target,
-                        const TypeConverter *typeConverter) {
+void addIntegerCompareOpLegality(ConversionTarget &target,
+                                 const TypeConverter *typeConverter) {
   target.addDynamicallyLegalOp<OpT>([typeConverter](OpT op) {
-    return !isLowerableUnaryOp(op, *typeConverter);
+    return !isLowerableIntegerCompareOp(op, *typeConverter);
+  });
+}
+
+template <typename OpT>
+void addIntegerOrFloatBinaryOpLegality(ConversionTarget &target,
+                                       const TypeConverter *typeConverter) {
+  target.addDynamicallyLegalOp<OpT>([typeConverter](OpT op) {
+    return !isLowerableIntegerBinaryOp(op, *typeConverter) &&
+           !isLowerableFloatBinaryOp(op, *typeConverter);
+  });
+}
+
+template <typename OpT>
+void addIntegerUnaryOpLegality(ConversionTarget &target,
+                               const TypeConverter *typeConverter) {
+  target.addDynamicallyLegalOp<OpT>([typeConverter](OpT op) {
+    return !isLowerableIntegerUnaryOp(op, *typeConverter);
+  });
+}
+
+template <typename OpT>
+void addIntegerOrFloatUnaryOpLegality(ConversionTarget &target,
+                                      const TypeConverter *typeConverter) {
+  target.addDynamicallyLegalOp<OpT>([typeConverter](OpT op) {
+    return !isLowerableIntegerUnaryOp(op, *typeConverter) &&
+           !isLowerableFloatUnaryOp(op, *typeConverter);
   });
 }
 
@@ -1014,27 +1189,37 @@ struct ConvertRustTypedToArithPass
         [&](rustmir::TypedConstOp op) {
           return !isLowerableConst(op, typeConverter);
         });
-    addBinaryOpLegality<rustmir::AddOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::AddUncheckedOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::SubOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::SubUncheckedOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::MulOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::MulUncheckedOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::DivOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::RemOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::BitAndOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::BitOrOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::BitXorOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::ShlOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::ShlUncheckedOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::ShrOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::ShrUncheckedOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::EqOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::NeOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::LtOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::LeOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::GtOp>(target, typeConverterPtr);
-    addBinaryOpLegality<rustmir::GeOp>(target, typeConverterPtr);
+    addIntegerOrFloatBinaryOpLegality<rustmir::AddOp>(target,
+                                                      typeConverterPtr);
+    addIntegerOrFloatBinaryOpLegality<rustmir::AddUncheckedOp>(
+        target, typeConverterPtr);
+    addIntegerOrFloatBinaryOpLegality<rustmir::SubOp>(target,
+                                                      typeConverterPtr);
+    addIntegerOrFloatBinaryOpLegality<rustmir::SubUncheckedOp>(
+        target, typeConverterPtr);
+    addIntegerOrFloatBinaryOpLegality<rustmir::MulOp>(target,
+                                                      typeConverterPtr);
+    addIntegerOrFloatBinaryOpLegality<rustmir::MulUncheckedOp>(
+        target, typeConverterPtr);
+    addIntegerOrFloatBinaryOpLegality<rustmir::DivOp>(target,
+                                                      typeConverterPtr);
+    addIntegerOrFloatBinaryOpLegality<rustmir::RemOp>(target,
+                                                      typeConverterPtr);
+    addIntegerBinaryOpLegality<rustmir::BitAndOp>(target, typeConverterPtr);
+    addIntegerBinaryOpLegality<rustmir::BitOrOp>(target, typeConverterPtr);
+    addIntegerBinaryOpLegality<rustmir::BitXorOp>(target, typeConverterPtr);
+    addIntegerBinaryOpLegality<rustmir::ShlOp>(target, typeConverterPtr);
+    addIntegerBinaryOpLegality<rustmir::ShlUncheckedOp>(target,
+                                                        typeConverterPtr);
+    addIntegerBinaryOpLegality<rustmir::ShrOp>(target, typeConverterPtr);
+    addIntegerBinaryOpLegality<rustmir::ShrUncheckedOp>(target,
+                                                        typeConverterPtr);
+    addIntegerCompareOpLegality<rustmir::EqOp>(target, typeConverterPtr);
+    addIntegerCompareOpLegality<rustmir::NeOp>(target, typeConverterPtr);
+    addIntegerCompareOpLegality<rustmir::LtOp>(target, typeConverterPtr);
+    addIntegerCompareOpLegality<rustmir::LeOp>(target, typeConverterPtr);
+    addIntegerCompareOpLegality<rustmir::GtOp>(target, typeConverterPtr);
+    addIntegerCompareOpLegality<rustmir::GeOp>(target, typeConverterPtr);
     target.addDynamicallyLegalOp<rustmir::CheckedAddOp>(
         [&](rustmir::CheckedAddOp op) {
           return !isLowerableCheckedBinaryOp(op, typeConverter);
@@ -1047,8 +1232,9 @@ struct ConvertRustTypedToArithPass
         [&](rustmir::CheckedMulOp op) {
           return !isLowerableCheckedBinaryOp(op, typeConverter);
         });
-    addUnaryOpLegality<rustmir::NegOp>(target, typeConverterPtr);
-    addUnaryOpLegality<rustmir::NotOp>(target, typeConverterPtr);
+    addIntegerOrFloatUnaryOpLegality<rustmir::NegOp>(target,
+                                                     typeConverterPtr);
+    addIntegerUnaryOpLegality<rustmir::NotOp>(target, typeConverterPtr);
     target.addDynamicallyLegalOp<rustmir::IntCastOp>(
         [&](rustmir::IntCastOp op) {
           return !isLowerableIntCast(op, typeConverter);
@@ -1158,6 +1344,14 @@ struct ConvertRustTypedToArithPass
         SimpleBinaryOpConversion<rustmir::MulOp, arith::MulIOp>,
         SimpleBinaryOpConversion<rustmir::MulUncheckedOp, arith::MulIOp>,
         DivOpConversion<rustmir::DivOp>, RemOpConversion<rustmir::RemOp>,
+        SimpleFloatBinaryOpConversion<rustmir::AddOp, arith::AddFOp>,
+        SimpleFloatBinaryOpConversion<rustmir::AddUncheckedOp, arith::AddFOp>,
+        SimpleFloatBinaryOpConversion<rustmir::SubOp, arith::SubFOp>,
+        SimpleFloatBinaryOpConversion<rustmir::SubUncheckedOp, arith::SubFOp>,
+        SimpleFloatBinaryOpConversion<rustmir::MulOp, arith::MulFOp>,
+        SimpleFloatBinaryOpConversion<rustmir::MulUncheckedOp, arith::MulFOp>,
+        SimpleFloatBinaryOpConversion<rustmir::DivOp, arith::DivFOp>,
+        SimpleFloatBinaryOpConversion<rustmir::RemOp, arith::RemFOp>,
         SimpleBinaryOpConversion<rustmir::BitAndOp, arith::AndIOp>,
         SimpleBinaryOpConversion<rustmir::BitOrOp, arith::OrIOp>,
         SimpleBinaryOpConversion<rustmir::BitXorOp, arith::XOrIOp>,
@@ -1178,7 +1372,8 @@ struct ConvertRustTypedToArithPass
         CompareOpConversion<rustmir::GeOp, arith::CmpIPredicate::sge,
                             arith::CmpIPredicate::uge>,
         CheckedAddOpConversion, CheckedSubOpConversion, CheckedMulOpConversion,
-        NegOpConversion, NotOpConversion, IntCastOpConversion,
+        NegOpConversion, FloatNegOpConversion, NotOpConversion,
+        IntCastOpConversion,
         LocalSlotConversion, LoadConversion,
         StoreConversion, BorrowOpConversion, RawAddressOpConversion,
         MakeAggregateConversion, FieldConversion, FieldAddrConversion,

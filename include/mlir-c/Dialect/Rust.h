@@ -49,6 +49,8 @@ MLIR_CAPI_EXPORTED MlirType rustMirBoolTypeGet(MlirContext context);
 MLIR_CAPI_EXPORTED MlirType rustMirCharTypeGet(MlirContext context);
 MLIR_CAPI_EXPORTED MlirType rustMirIntTypeGet(MlirContext context,
                                               MlirStringRef spelling);
+MLIR_CAPI_EXPORTED MlirType rustMirFloatTypeGet(MlirContext context,
+                                                uint32_t bitWidth);
 MLIR_CAPI_EXPORTED MlirType rustMirUnitTypeGet(MlirContext context);
 MLIR_CAPI_EXPORTED MlirType rustMirNeverTypeGet(MlirContext context);
 MLIR_CAPI_EXPORTED MlirType rustMirAdtTypeGetIdentified(MlirContext context,

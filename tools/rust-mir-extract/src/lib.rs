@@ -14,8 +14,8 @@ use rustc_public::mir::{
 };
 use rustc_public::target::{Endian, MachineInfo};
 use rustc_public::ty::{
-    Abi, AdtDef, Allocation, ConstantKind, GenericArgKind, GenericArgs, IntTy, RigidTy, Ty,
-    TyConstKind, TyKind, UintTy,
+    Abi, AdtDef, Allocation, ConstantKind, FloatTy, GenericArgKind, GenericArgs, IntTy, RigidTy,
+    Ty, TyConstKind, TyKind, UintTy,
 };
 use rustc_public::CrateItem;
 use std::env;
@@ -109,6 +109,7 @@ type RustMirCharTypeGet = unsafe extern "C" fn(MlirContext) -> MlirType;
 type RustMirUnitTypeGet = unsafe extern "C" fn(MlirContext) -> MlirType;
 type RustMirNeverTypeGet = unsafe extern "C" fn(MlirContext) -> MlirType;
 type RustMirIntTypeGet = unsafe extern "C" fn(MlirContext, MlirStringRef) -> MlirType;
+type RustMirFloatTypeGet = unsafe extern "C" fn(MlirContext, u32) -> MlirType;
 type RustMirAdtTypeGetIdentified = unsafe extern "C" fn(MlirContext, MlirStringRef) -> MlirType;
 type RustMirAdtTypeSetBody = unsafe extern "C" fn(MlirType, isize, *const MlirType);
 type RustTypedTupleTypeGet = unsafe extern "C" fn(MlirContext, isize, *const MlirType) -> MlirType;
@@ -272,6 +273,7 @@ struct MlirApi {
     mir_unit_type_get: RustMirUnitTypeGet,
     mir_never_type_get: RustMirNeverTypeGet,
     mir_int_type_get: RustMirIntTypeGet,
+    mir_float_type_get: RustMirFloatTypeGet,
     mir_adt_type_get_identified: RustMirAdtTypeGetIdentified,
     mir_adt_type_set_body: RustMirAdtTypeSetBody,
     typed_tuple_type_get: RustTypedTupleTypeGet,
@@ -356,6 +358,7 @@ impl MlirApi {
                 mir_unit_type_get: load_symbol(handle, "rustMirUnitTypeGet")?,
                 mir_never_type_get: load_symbol(handle, "rustMirNeverTypeGet")?,
                 mir_int_type_get: load_symbol(handle, "rustMirIntTypeGet")?,
+                mir_float_type_get: load_symbol(handle, "rustMirFloatTypeGet")?,
                 mir_adt_type_get_identified: load_symbol(handle, "rustMirAdtTypeGetIdentified")?,
                 mir_adt_type_set_body: load_symbol(handle, "rustMirAdtTypeSetBody")?,
                 typed_tuple_type_get: load_symbol(handle, "rustTypedTupleTypeGet")?,
@@ -662,6 +665,8 @@ enum MirType {
     /// Carries the canonical Rust spelling (e.g. "i32", "usize"), derived from
     /// the typed `rustc_public` integer kind rather than its Debug rendering.
     Int(&'static str),
+    /// Carries the Rust float bit width (e.g. 32 for `f32`, 64 for `f64`).
+    Float(u32),
     /// A nominal ADT (struct/enum/union) with its full structure. `name` is the
     /// canonical identity (def path + generic args); `variants` holds each
     /// variant's field types. Built into a recursion-capable identified MLIR
@@ -727,6 +732,15 @@ fn unsigned_int_spelling(uint_ty: UintTy) -> &'static str {
     }
 }
 
+fn float_bit_width(float_ty: FloatTy) -> u32 {
+    match float_ty {
+        FloatTy::F16 => 16,
+        FloatTy::F32 => 32,
+        FloatTy::F64 => 64,
+        FloatTy::F128 => 128,
+    }
+}
+
 impl MirType {
     fn spelling(&self) -> String {
         match self {
@@ -736,6 +750,7 @@ impl MirType {
             Self::Unit => "()".to_string(),
             Self::Never => "!".to_string(),
             Self::Int(spelling) => (*spelling).to_string(),
+            Self::Float(bit_width) => format!("f{bit_width}"),
             Self::Adt { name, .. } => name.clone(),
             Self::AdtRef(name) => name.clone(),
             Self::Tuple(elements) => {
@@ -772,6 +787,7 @@ impl MirType {
             TyKind::RigidTy(RigidTy::Char) => Self::Char,
             TyKind::RigidTy(RigidTy::Int(int_ty)) => Self::Int(signed_int_spelling(int_ty)),
             TyKind::RigidTy(RigidTy::Uint(uint_ty)) => Self::Int(unsigned_int_spelling(uint_ty)),
+            TyKind::RigidTy(RigidTy::Float(float_ty)) => Self::Float(float_bit_width(float_ty)),
             TyKind::RigidTy(RigidTy::Never) => Self::Never,
             TyKind::RigidTy(RigidTy::Tuple(elements)) if elements.is_empty() => Self::Unit,
             TyKind::RigidTy(RigidTy::Tuple(elements)) => Self::Tuple(
@@ -881,6 +897,7 @@ fn type_identity(ty: Ty) -> String {
         TyKind::RigidTy(RigidTy::Char) => "char".to_string(),
         TyKind::RigidTy(RigidTy::Int(int_ty)) => signed_int_spelling(int_ty).to_string(),
         TyKind::RigidTy(RigidTy::Uint(uint_ty)) => unsigned_int_spelling(uint_ty).to_string(),
+        TyKind::RigidTy(RigidTy::Float(float_ty)) => format!("f{}", float_bit_width(float_ty)),
         TyKind::RigidTy(RigidTy::Never) => "!".to_string(),
         TyKind::RigidTy(RigidTy::Tuple(elements)) if elements.is_empty() => "()".to_string(),
         TyKind::RigidTy(RigidTy::Tuple(elements)) => format!(
@@ -1748,6 +1765,9 @@ impl MlirEmitter {
             MirType::Int(spelling) => unsafe {
                 (self.api.mir_int_type_get)(self.context, mlir_string(spelling))
             },
+            MirType::Float(bit_width) => unsafe {
+                (self.api.mir_float_type_get)(self.context, *bit_width)
+            },
             MirType::Adt { name, variants } => {
                 // Create the identified handle first so self-referential field
                 // types (AdtRef) resolve to the same type, then set the body.
@@ -2165,6 +2185,14 @@ fn scalar_text_from_allocation(ty: &str, allocation: &Allocation) -> Option<Stri
     }
     if ty.contains("RigidTy(Uint(") {
         return allocation.read_uint().ok().map(|value| value.to_string());
+    }
+    if ty.contains("RigidTy(Float(F32))") {
+        let bits = allocation.read_uint().ok()? as u32;
+        return Some(f32::from_bits(bits).to_string());
+    }
+    if ty.contains("RigidTy(Float(F64))") {
+        let bits = allocation.read_uint().ok()? as u64;
+        return Some(f64::from_bits(bits).to_string());
     }
 
     None

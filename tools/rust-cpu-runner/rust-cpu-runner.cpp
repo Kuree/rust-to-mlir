@@ -7,6 +7,7 @@
 #include "RustToLLVM/Support/Toolchain.h"
 #include "llvm/ADT/ScopeExit.h"
 #include "llvm/ADT/SmallString.h"
+#include "mlir/Dialect/LLVMIR/LLVMDialect.h"
 #include "mlir/ExecutionEngine/ExecutionEngine.h"
 #include "mlir/IR/BuiltinOps.h"
 #include "mlir/IR/Diagnostics.h"
@@ -44,13 +45,6 @@ cl::opt<std::string> inputFilename(cl::Positional, cl::desc("<input file>"),
                                    cl::Required);
 cl::opt<std::string> entryPoint("e", cl::desc("Function to run"),
                                 cl::init("main"));
-cl::opt<EntryPointResult> entryPointResult(
-    "entry-point-result", cl::desc("Textual description of the function type"),
-    cl::values(clEnumValN(EntryPointResult::Void, "void", "void result"),
-               clEnumValN(EntryPointResult::I32, "i32", "i32 result"),
-               clEnumValN(EntryPointResult::I64, "i64", "i64 result"),
-               clEnumValN(EntryPointResult::F32, "f32", "f32 result")),
-    cl::init(EntryPointResult::Void));
 cl::list<std::string> sharedLibs("shared-libs",
                                  cl::desc("Libraries to link dynamically"),
                                  cl::CommaSeparated);
@@ -317,6 +311,42 @@ mlir::LogicalResult lowerRustInput(mlir::Operation *op) {
   return pm.run(op);
 }
 
+std::optional<EntryPointResult> inferEntryPointResult(mlir::ModuleOp module) {
+  mlir::LLVM::LLVMFuncOp func =
+      module.lookupSymbol<mlir::LLVM::LLVMFuncOp>(entryPoint);
+  if (!func) {
+    llvm::errs() << "error: entry point '" << entryPoint
+                 << "' was not found after lowering\n";
+    return std::nullopt;
+  }
+
+  auto resultTypes = func.getResultTypes();
+  if (resultTypes.empty())
+    return EntryPointResult::Void;
+
+  if (resultTypes.size() != 1) {
+    llvm::errs() << "error: entry point '" << entryPoint << "' returns "
+                 << resultTypes.size()
+                 << " values; rust-cpu-runner supports void or one scalar "
+                    "result\n";
+    return std::nullopt;
+  }
+
+  mlir::Type resultType = resultTypes.front();
+  if (resultType.isInteger(32))
+    return EntryPointResult::I32;
+  if (resultType.isInteger(64))
+    return EntryPointResult::I64;
+  if (resultType.isF32())
+    return EntryPointResult::F32;
+
+  llvm::errs() << "error: unsupported entry point result type ";
+  resultType.print(llvm::errs());
+  llvm::errs() << " for '" << entryPoint
+               << "'; use runtime printing for this type instead\n";
+  return std::nullopt;
+}
+
 template <typename T>
 int invokeAndPrintResult(mlir::ExecutionEngine &engine, llvm::StringRef name) {
   T result{};
@@ -329,8 +359,9 @@ int invokeAndPrintResult(mlir::ExecutionEngine &engine, llvm::StringRef name) {
   return 0;
 }
 
-int invokeEntryPoint(mlir::ExecutionEngine &engine) {
-  switch (entryPointResult) {
+int invokeEntryPoint(mlir::ExecutionEngine &engine,
+                     EntryPointResult resultKind) {
+  switch (resultKind) {
   case EntryPointResult::Void:
     if (llvm::Error error = engine.invokePacked(entryPoint)) {
       llvm::logAllUnhandledErrors(std::move(error), llvm::errs(), "Error: ");
@@ -376,6 +407,11 @@ int main(int argc, char **argv) {
   if (failed(lowerRustInput(*module)))
     return 1;
 
+  std::optional<EntryPointResult> entryPointResult =
+      inferEntryPointResult(*module);
+  if (!entryPointResult)
+    return 1;
+
   std::vector<std::string> resolvedSharedLibs(sharedLibs.begin(),
                                               sharedLibs.end());
   if (!addDiscoveredRustStdSharedLibrary(resolvedSharedLibs))
@@ -399,5 +435,5 @@ int main(int argc, char **argv) {
   }
 
   std::unique_ptr<mlir::ExecutionEngine> engine = std::move(*expectedEngine);
-  return invokeEntryPoint(*engine);
+  return invokeEntryPoint(*engine, *entryPointResult);
 }

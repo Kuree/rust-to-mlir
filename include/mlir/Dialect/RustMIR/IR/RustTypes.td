@@ -59,6 +59,12 @@ def Rust_IntType : Rust_Type<"Int", "int"> {
   }];
 }
 
+def Rust_FloatType : Rust_Type<"Float", "float"> {
+  let summary = "Rust floating-point type";
+  let parameters = (ins "unsigned":$bitWidth);
+  let assemblyFormat = "`<` $bitWidth `>`";
+}
+
 def Rust_TupleType : Rust_Type<"Tuple", "tuple"> {
   let summary = "Rust tuple type";
   let parameters = (ins StringRefParameter<"rust tuple spelling">:$spelling);

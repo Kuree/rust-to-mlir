@@ -362,6 +362,10 @@ MlirType rustMirIntTypeGet(MlirContext context, MlirStringRef spelling) {
   return wrap(rustmir::IntType::getFromSpelling(unwrap(context), unwrap(spelling)));
 }
 
+MlirType rustMirFloatTypeGet(MlirContext context, uint32_t bitWidth) {
+  return wrap(rustmir::FloatType::get(unwrap(context), bitWidth));
+}
+
 MlirType rustMirCharTypeGet(MlirContext context) {
   return wrap(rustmir::CharType::get(unwrap(context)));
 }

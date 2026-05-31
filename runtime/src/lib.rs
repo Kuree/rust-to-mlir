@@ -73,6 +73,16 @@ define_println!(__rtl_println_f64, f64);
 define_println!(__rtl_println_bool, bool);
 
 #[no_mangle]
+pub extern "C" fn __rtl_f32_from_bits(bits: u32) -> f32 {
+    f32::from_bits(bits)
+}
+
+#[no_mangle]
+pub extern "C" fn __rtl_f64_from_bits(bits: u64) -> f64 {
+    f64::from_bits(bits)
+}
+
+#[no_mangle]
 pub extern "C" fn __rtl_print_char(value: u32) {
     let ch = char::from_u32(value).unwrap_or(char::REPLACEMENT_CHARACTER);
     print!("{ch}");

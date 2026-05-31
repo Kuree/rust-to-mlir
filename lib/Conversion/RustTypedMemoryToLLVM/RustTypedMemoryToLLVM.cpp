@@ -45,6 +45,13 @@ public:
     addConversion([this](rustmir::TypedAddrType) -> Type {
       return LLVM::LLVMPointerType::get(this->context);
     });
+    addConversion([this](rustmir::FloatType type) -> Type {
+      if (type.getBitWidth() == 32)
+        return Float32Type::get(this->context);
+      if (type.getBitWidth() == 64)
+        return Float64Type::get(this->context);
+      return Type();
+    });
     addConversion([this](rustmir::TypedRefType type) -> Type {
       if (isa<rustmir::TypedSliceType>(type.getPointeeType()))
         return getFatPointerType(this->context);
