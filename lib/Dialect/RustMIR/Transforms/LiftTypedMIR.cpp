@@ -28,7 +28,9 @@
 #include "llvm/ADT/StringRef.h"
 #include "llvm/ADT/StringSet.h"
 
+#include <functional>
 #include <iterator>
+#include <limits>
 #include <optional>
 #include <string>
 
@@ -48,6 +50,27 @@ struct LocalSlot {
 struct PlaceAddress {
   Value slot;
   Type elementType;
+};
+
+struct DropLoweringContext {
+  ModuleOp module;
+  OpBuilder &builder;
+  llvm::StringMap<LocalSlot> &slots;
+  Block *typedFuncBlock;
+  int64_t &nextSyntheticBlock;
+  Operation *diagnosticOp;
+};
+
+struct DropCallAttrs {
+  IntegerAttr targetAttr;
+  rust::mir::RustUnwindActionAttr unwindAttr;
+};
+
+struct DropAddress {
+  Type elementType;
+  std::function<std::optional<Value>(DropLoweringContext &, Location,
+                                     StringAttr)>
+      materialize;
 };
 
 enum class RangeIndexKind {
@@ -1771,77 +1794,475 @@ LogicalResult lowerAssert(rust::mir::AssertOp op, OpBuilder &builder,
   return success();
 }
 
-LogicalResult lowerDrop(rust::mir::DropOp op, OpBuilder &builder,
-                        llvm::StringMap<LocalSlot> &slots) {
+rust::mir::TypedBlockOp createSyntheticTypedBlock(DropLoweringContext &ctx,
+                                                  Location loc,
+                                                  StringAttr spanAttr) {
+  OpBuilder::InsertionGuard guard(ctx.builder);
+  ctx.builder.setInsertionPointToEnd(ctx.typedFuncBlock);
+  auto block = mlir::rust::createOp<rust::mir::TypedBlockOp>(
+      ctx.builder, loc, ctx.builder.getI64IntegerAttr(ctx.nextSyntheticBlock++),
+      spanAttr);
+  block.getBody().push_back(new Block());
+  return block;
+}
+
+bool mayNeedDropGlue(Type type, ModuleOp module) {
+  if (isTriviallyDroppableType(type))
+    return false;
+
+  if (auto tupleType = dyn_cast<rust::mir::TypedTupleType>(type))
+    return llvm::any_of(tupleType.getElementTypes(),
+                        [&](Type elementType) {
+                          return mayNeedDropGlue(elementType, module);
+                        });
+
+  if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(type))
+    return mayNeedDropGlue(arrayType.getElementType(), module);
+
+  if (auto adtType = dyn_cast<rust::mir::AdtType>(type)) {
+    if (getLocalDropImpl(adtType, module))
+      return true;
+
+    if (!adtType.isInitialized())
+      return true;
+
+    for (Type variant : adtType.getVariants()) {
+      if (isa<rust::mir::UnitType>(variant))
+        continue;
+      auto tupleType = dyn_cast<rust::mir::TypedTupleType>(variant);
+      if (!tupleType)
+        return true;
+      if (llvm::any_of(tupleType.getElementTypes(), [&](Type fieldType) {
+            return mayNeedDropGlue(fieldType, module);
+          }))
+        return true;
+    }
+    return false;
+  }
+
+  return true;
+}
+
+LogicalResult emitUnsupportedDropGlue(Type type, DropLoweringContext &ctx) {
+  ctx.diagnosticOp
+      ->emitError("cannot lift drop for type requiring unsupported drop glue: ")
+      << type;
+  return failure();
+}
+
+DropAddress makePlaceDropAddress(rust::mir::PlaceOp place, Type elementType) {
+  return DropAddress{
+      elementType,
+      [place](DropLoweringContext &ctx, Location loc,
+              StringAttr spanAttr) -> std::optional<Value> {
+        std::optional<PlaceAddress> address =
+            materializePlaceAddress(place, ctx.builder, loc, ctx.slots,
+                                    spanAttr);
+        if (!address)
+          return std::nullopt;
+        return address->slot;
+      }};
+}
+
+std::optional<DropAddress> makeFieldDropAddress(DropAddress base,
+                                                Type aggregateType,
+                                                uint64_t fieldIndex,
+                                                IntegerAttr variantIndex,
+                                                DropLoweringContext &ctx) {
+  if (fieldIndex > static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+    return std::nullopt;
+
+  IntegerAttr fieldIndexAttr =
+      ctx.builder.getI64IntegerAttr(static_cast<int64_t>(fieldIndex));
+  Type fieldType = getIndexedElementType(aggregateType, fieldIndexAttr,
+                                         variantIndex);
+  if (!fieldType)
+    return std::nullopt;
+
+  MLIRContext *context = aggregateType.getContext();
+  return DropAddress{
+      fieldType,
+      [base, fieldType, fieldIndexAttr, variantIndex, context](
+          DropLoweringContext &ctx, Location loc,
+          StringAttr spanAttr) -> std::optional<Value> {
+        std::optional<Value> baseAddress =
+            base.materialize(ctx, loc, spanAttr);
+        if (!baseAddress)
+          return std::nullopt;
+
+        auto addressType = rust::mir::TypedAddrType::get(context, fieldType);
+        return mlir::rust::createOp<rust::mir::FieldAddrOp>(
+                   ctx.builder, loc, addressType, *baseAddress, fieldIndexAttr,
+                   variantIndex, spanAttr)
+            .getAddress();
+      }};
+}
+
+std::optional<DropAddress> makeArrayElementDropAddress(DropAddress base,
+                                                       uint64_t elementIndex,
+                                                       DropLoweringContext &ctx) {
+  if (elementIndex >
+      static_cast<uint64_t>(std::numeric_limits<int64_t>::max()))
+    return std::nullopt;
+
+  auto arrayType = dyn_cast<rust::mir::TypedArrayType>(base.elementType);
+  if (!arrayType)
+    return std::nullopt;
+
+  Type elementType = arrayType.getElementType();
+  MLIRContext *context = arrayType.getContext();
+  int64_t signedIndex = static_cast<int64_t>(elementIndex);
+  return DropAddress{
+      elementType,
+      [base, elementType, context, signedIndex](
+          DropLoweringContext &ctx, Location loc,
+          StringAttr spanAttr) -> std::optional<Value> {
+        std::optional<Value> baseAddress =
+            base.materialize(ctx, loc, spanAttr);
+        if (!baseAddress)
+          return std::nullopt;
+
+        Type indexType = rust::mir::IntType::getFromSpelling(context, "usize");
+        Value index =
+            createTypedIntegerConst(ctx.builder, loc, indexType, signedIndex,
+                                    spanAttr);
+        auto addressType = rust::mir::TypedAddrType::get(context, elementType);
+        return mlir::rust::createOp<rust::mir::IndexAddrOp>(
+                   ctx.builder, loc, addressType, *baseAddress, index,
+                   spanAttr)
+            .getAddress();
+      }};
+}
+
+void emitDropBridgeCall(Value address, StringAttr bridgeSymbol,
+                        DropLoweringContext &ctx, Location loc,
+                        StringAttr spanAttr, DropCallAttrs callAttrs) {
+  MLIRContext *context = bridgeSymbol.getContext();
+  mlir::rust::createOp<rust::mir::TypedCallOp>(
+      ctx.builder, loc, TypeRange(),
+      FlatSymbolRefAttr::get(context, bridgeSymbol.getValue()),
+      ValueRange{address}, ctx.builder.getStringAttr("core::ptr::drop_in_place"),
+      rust::mir::RustAbiAttr::get(context, rust::mir::RustAbi::C),
+      StringAttr(), StringAttr(), StringAttr(), StringAttr(), StringAttr(),
+      bridgeSymbol, BoolAttr(), callAttrs.targetAttr, callAttrs.unwindAttr,
+      spanAttr);
+}
+
+void emitLocalDropImplCall(Type type, Value address, const LocalDropImpl &dropImpl,
+                           DropLoweringContext &ctx, Location loc,
+                           StringAttr spanAttr, DropCallAttrs callAttrs) {
+  MLIRContext *context = type.getContext();
+  Type selfType = rust::mir::TypedRefType::get(
+      context, rust::mir::RustMutability::Mut, type);
+  Value selfRef =
+      mlir::rust::createOp<rust::mir::BorrowOp>(
+          ctx.builder, loc, selfType, address,
+          rust::mir::RustBorrowKindAttr::get(
+              context, rust::mir::RustBorrowKind::Mut),
+          rust::mir::RustMutabilityAttr::get(
+              context, rust::mir::RustMutability::Mut),
+          StringAttr(), spanAttr)
+          .getResult();
+
+  mlir::rust::createOp<rust::mir::TypedCallOp>(
+      ctx.builder, loc, TypeRange(),
+      FlatSymbolRefAttr::get(context, dropImpl.typedSymbol), ValueRange{selfRef},
+      ctx.builder.getStringAttr(dropImpl.rustName),
+      rust::mir::RustAbiAttr::get(context, rust::mir::RustAbi::Rust),
+      StringAttr(), StringAttr(), StringAttr(), StringAttr(), StringAttr(),
+      StringAttr(), BoolAttr(), callAttrs.targetAttr, callAttrs.unwindAttr,
+      spanAttr);
+}
+
+LogicalResult emitDropGlueTo(Type type, DropAddress address,
+                             DropLoweringContext &ctx, Location loc,
+                             StringAttr spanAttr, int64_t target,
+                             DropCallAttrs callAttrs);
+
+LogicalResult emitDropSequenceTo(ArrayRef<DropAddress> fields,
+                                 DropLoweringContext &ctx, Location loc,
+                                 StringAttr spanAttr, int64_t target,
+                                 DropCallAttrs callAttrs) {
+  SmallVector<DropAddress> nontrivialFields;
+  for (const DropAddress &field : fields)
+    if (mayNeedDropGlue(field.elementType, ctx.module))
+      nontrivialFields.push_back(field);
+
+  if (nontrivialFields.empty()) {
+    createTypedGoto(ctx.builder, loc, target, spanAttr);
+    return success();
+  }
+
+  for (auto indexedField : llvm::enumerate(nontrivialFields)) {
+    int64_t continuationTarget = target;
+    rust::mir::TypedBlockOp continuationBlock;
+    if (indexedField.index() + 1 != nontrivialFields.size()) {
+      continuationBlock = createSyntheticTypedBlock(ctx, loc, spanAttr);
+      continuationTarget =
+          static_cast<int64_t>(continuationBlock.getIndex());
+    }
+
+    if (failed(emitDropGlueTo(indexedField.value().elementType,
+                              indexedField.value(), ctx, loc, spanAttr,
+                              continuationTarget, callAttrs)))
+      return failure();
+
+    if (continuationBlock)
+      ctx.builder.setInsertionPointToEnd(
+          &continuationBlock.getBody().front());
+  }
+
+  return success();
+}
+
+LogicalResult appendTupleFieldDropAddresses(
+    Type aggregateType, rust::mir::TypedTupleType tupleType, DropAddress address,
+    IntegerAttr variantIndex, DropLoweringContext &ctx,
+    SmallVectorImpl<DropAddress> &fields) {
+  for (uint64_t fieldIndex = 0; fieldIndex < tupleType.getElementTypes().size();
+       ++fieldIndex) {
+    std::optional<DropAddress> fieldAddress = makeFieldDropAddress(
+        address, aggregateType, fieldIndex, variantIndex, ctx);
+    if (!fieldAddress)
+      return emitUnsupportedDropGlue(aggregateType, ctx);
+    fields.push_back(*fieldAddress);
+  }
+  return success();
+}
+
+LogicalResult emitTupleDropGlueTo(rust::mir::TypedTupleType tupleType,
+                                  DropAddress address,
+                                  DropLoweringContext &ctx, Location loc,
+                                  StringAttr spanAttr, int64_t target,
+                                  DropCallAttrs callAttrs) {
+  SmallVector<DropAddress> fields;
+  if (failed(appendTupleFieldDropAddresses(tupleType, tupleType, address,
+                                           IntegerAttr(), ctx, fields)))
+    return failure();
+  return emitDropSequenceTo(fields, ctx, loc, spanAttr, target, callAttrs);
+}
+
+LogicalResult emitArrayDropGlueTo(rust::mir::TypedArrayType arrayType,
+                                  DropAddress address,
+                                  DropLoweringContext &ctx, Location loc,
+                                  StringAttr spanAttr, int64_t target,
+                                  DropCallAttrs callAttrs) {
+  SmallVector<DropAddress> elements;
+  for (uint64_t elementIndex = 0; elementIndex < arrayType.getLength();
+       ++elementIndex) {
+    std::optional<DropAddress> elementAddress =
+        makeArrayElementDropAddress(address, elementIndex, ctx);
+    if (!elementAddress)
+      return emitUnsupportedDropGlue(arrayType, ctx);
+    elements.push_back(*elementAddress);
+  }
+  return emitDropSequenceTo(elements, ctx, loc, spanAttr, target, callAttrs);
+}
+
+LogicalResult emitSingleVariantAdtDropGlueTo(rust::mir::AdtType adtType,
+                                             DropAddress address,
+                                             DropLoweringContext &ctx,
+                                             Location loc, StringAttr spanAttr,
+                                             int64_t target,
+                                             DropCallAttrs callAttrs) {
+  ArrayRef<Type> variants = adtType.getVariants();
+  if (variants.empty())
+    return emitUnsupportedDropGlue(adtType, ctx);
+
+  if (isa<rust::mir::UnitType>(variants.front())) {
+    createTypedGoto(ctx.builder, loc, target, spanAttr);
+    return success();
+  }
+
+  auto tupleType = dyn_cast<rust::mir::TypedTupleType>(variants.front());
+  if (!tupleType)
+    return emitUnsupportedDropGlue(adtType, ctx);
+
+  SmallVector<DropAddress> fields;
+  if (failed(appendTupleFieldDropAddresses(adtType, tupleType, address,
+                                           IntegerAttr(), ctx, fields)))
+    return failure();
+  return emitDropSequenceTo(fields, ctx, loc, spanAttr, target, callAttrs);
+}
+
+LogicalResult emitEnumVariantFieldsTo(rust::mir::AdtType adtType,
+                                      uint64_t variantIndex,
+                                      DropAddress address,
+                                      DropLoweringContext &ctx, Location loc,
+                                      StringAttr spanAttr, int64_t target,
+                                      DropCallAttrs callAttrs) {
+  ArrayRef<Type> variants = adtType.getVariants();
+  if (variantIndex >= variants.size())
+    return emitUnsupportedDropGlue(adtType, ctx);
+
+  if (isa<rust::mir::UnitType>(variants[variantIndex])) {
+    createTypedGoto(ctx.builder, loc, target, spanAttr);
+    return success();
+  }
+
+  auto tupleType = dyn_cast<rust::mir::TypedTupleType>(variants[variantIndex]);
+  if (!tupleType)
+    return emitUnsupportedDropGlue(adtType, ctx);
+
+  SmallVector<DropAddress> fields;
+  IntegerAttr variantIndexAttr =
+      ctx.builder.getI64IntegerAttr(static_cast<int64_t>(variantIndex));
+  if (failed(appendTupleFieldDropAddresses(adtType, tupleType, address,
+                                           variantIndexAttr, ctx, fields)))
+    return failure();
+  return emitDropSequenceTo(fields, ctx, loc, spanAttr, target, callAttrs);
+}
+
+LogicalResult emitMultiVariantAdtDropGlueTo(rust::mir::AdtType adtType,
+                                            DropAddress address,
+                                            DropLoweringContext &ctx,
+                                            Location loc, StringAttr spanAttr,
+                                            int64_t target,
+                                            DropCallAttrs callAttrs) {
+  SmallVector<std::pair<uint64_t, rust::mir::TypedBlockOp>> variantBlocks;
+  for (auto indexedVariant : llvm::enumerate(adtType.getVariants())) {
+    Type variant = indexedVariant.value();
+    if (isa<rust::mir::UnitType>(variant))
+      continue;
+
+    auto tupleType = dyn_cast<rust::mir::TypedTupleType>(variant);
+    if (!tupleType)
+      return emitUnsupportedDropGlue(adtType, ctx);
+
+    bool variantNeedsDrop =
+        llvm::any_of(tupleType.getElementTypes(), [&](Type fieldType) {
+          return mayNeedDropGlue(fieldType, ctx.module);
+        });
+    if (!variantNeedsDrop)
+      continue;
+
+    variantBlocks.push_back({indexedVariant.index(),
+                             createSyntheticTypedBlock(ctx, loc, spanAttr)});
+  }
+
+  if (variantBlocks.empty()) {
+    createTypedGoto(ctx.builder, loc, target, spanAttr);
+    return success();
+  }
+
+  std::optional<Value> aggregateAddress =
+      address.materialize(ctx, loc, spanAttr);
+  if (!aggregateAddress)
+    return ctx.diagnosticOp->emitError(
+        "failed to materialize drop place address");
+
+  Value aggregate = createLoad(ctx.builder, loc, *aggregateAddress, adtType);
+  Type discriminantType =
+      rust::mir::IntType::getFromSpelling(adtType.getContext(), "isize");
+  Value discriminant =
+      mlir::rust::createOp<rust::mir::TypedDiscriminantOp>(
+          ctx.builder, loc, discriminantType, aggregate, spanAttr)
+          .getResult();
+
+  SmallVector<NamedAttribute> targets;
+  targets.push_back(ctx.builder.getNamedAttr(
+      "default", ctx.builder.getI64IntegerAttr(target)));
+  for (auto [variantIndex, variantBlock] : variantBlocks) {
+    std::string caseName =
+        ("case_" + llvm::Twine(static_cast<uint64_t>(variantIndex))).str();
+    targets.push_back(ctx.builder.getNamedAttr(
+        caseName, ctx.builder.getI64IntegerAttr(
+                      static_cast<int64_t>(variantBlock.getIndex()))));
+  }
+
+  mlir::rust::createOp<rust::mir::TypedSwitchIntOp>(
+      ctx.builder, loc, discriminant, ctx.builder.getDictionaryAttr(targets),
+      spanAttr);
+
+  for (auto [variantIndex, variantBlock] : variantBlocks) {
+    ctx.builder.setInsertionPointToEnd(&variantBlock.getBody().front());
+    if (failed(emitEnumVariantFieldsTo(adtType, variantIndex, address, ctx, loc,
+                                       spanAttr, target, callAttrs)))
+      return failure();
+  }
+
+  return success();
+}
+
+LogicalResult emitAdtStructuralDropGlueTo(rust::mir::AdtType adtType,
+                                          DropAddress address,
+                                          DropLoweringContext &ctx,
+                                          Location loc, StringAttr spanAttr,
+                                          int64_t target,
+                                          DropCallAttrs callAttrs) {
+  if (!adtType.isInitialized() || adtType.getVariants().empty())
+    return emitUnsupportedDropGlue(adtType, ctx);
+
+  if (adtType.getVariants().size() == 1)
+    return emitSingleVariantAdtDropGlueTo(adtType, address, ctx, loc, spanAttr,
+                                          target, callAttrs);
+
+  return emitMultiVariantAdtDropGlueTo(adtType, address, ctx, loc, spanAttr,
+                                       target, callAttrs);
+}
+
+LogicalResult emitDropGlueTo(Type type, DropAddress address,
+                             DropLoweringContext &ctx, Location loc,
+                             StringAttr spanAttr, int64_t target,
+                             DropCallAttrs callAttrs) {
+  if (!mayNeedDropGlue(type, ctx.module)) {
+    createTypedGoto(ctx.builder, loc, target, spanAttr);
+    return success();
+  }
+
+  if (std::optional<LocalDropImpl> dropImpl =
+          getLocalDropImpl(type, ctx.module)) {
+    std::optional<Value> dropAddress = address.materialize(ctx, loc, spanAttr);
+    if (!dropAddress)
+      return ctx.diagnosticOp->emitError(
+          "failed to materialize drop place address");
+    emitLocalDropImplCall(type, *dropAddress, *dropImpl, ctx, loc, spanAttr,
+                          callAttrs);
+  }
+
+  if (auto tupleType = dyn_cast<rust::mir::TypedTupleType>(type))
+    return emitTupleDropGlueTo(tupleType, address, ctx, loc, spanAttr, target,
+                               callAttrs);
+
+  if (auto arrayType = dyn_cast<rust::mir::TypedArrayType>(type))
+    return emitArrayDropGlueTo(arrayType, address, ctx, loc, spanAttr, target,
+                               callAttrs);
+
+  if (auto adtType = dyn_cast<rust::mir::AdtType>(type))
+    return emitAdtStructuralDropGlueTo(adtType, address, ctx, loc, spanAttr,
+                                       target, callAttrs);
+
+  return emitUnsupportedDropGlue(type, ctx);
+}
+
+LogicalResult lowerDrop(rust::mir::DropOp op, DropLoweringContext &ctx) {
   auto place = dyn_cast_or_null<rust::mir::PlaceOp>(childAt(op, 0));
   if (!place)
     return op.emitError("expected drop place");
 
-  std::optional<Type> placeType = inferPlaceType(place, slots);
+  std::optional<Type> placeType = inferPlaceType(place, ctx.slots);
   if (!placeType)
     return op.emitError("failed to infer drop place type");
 
   Location loc = op.getLoc();
   StringAttr spanAttr = op.getSpanAttr();
-  if (isTriviallyDroppableType(*placeType)) {
-    createTypedGoto(builder, loc, static_cast<int64_t>(op.getTarget()),
-                    spanAttr);
-    return success();
-  }
+  int64_t target = static_cast<int64_t>(op.getTarget());
+  DropCallAttrs callAttrs{op.getTargetAttr(), op.getUnwindAttr()};
+  DropAddress address = makePlaceDropAddress(place, *placeType);
 
-  std::optional<PlaceAddress> address =
-      materializePlaceAddress(place, builder, loc, slots, spanAttr);
-  if (!address)
-    return op.emitError("failed to materialize drop place address");
-
-  MLIRContext *context = op.getContext();
   if (StringAttr bridgeSymbol = op.getCalleeBridgeSymbolAttr()) {
-    mlir::rust::createOp<rust::mir::TypedCallOp>(
-        builder, loc, TypeRange(),
-        FlatSymbolRefAttr::get(context, bridgeSymbol.getValue()),
-        ValueRange{address->slot},
-        builder.getStringAttr("core::ptr::drop_in_place"),
-        rust::mir::RustAbiAttr::get(context, rust::mir::RustAbi::C),
-        StringAttr(), StringAttr(), StringAttr(), StringAttr(), StringAttr(),
-        bridgeSymbol, BoolAttr(), op.getTargetAttr(), op.getUnwindAttr(),
-        spanAttr);
-    createTypedGoto(builder, loc, static_cast<int64_t>(op.getTarget()),
-                    spanAttr);
+    std::optional<Value> dropAddress = address.materialize(ctx, loc, spanAttr);
+    if (!dropAddress)
+      return op.emitError("failed to materialize drop place address");
+
+    emitDropBridgeCall(*dropAddress, bridgeSymbol, ctx, loc, spanAttr,
+                       callAttrs);
+    createTypedGoto(ctx.builder, loc, target, spanAttr);
     return success();
   }
 
-  if (ModuleOp module = op->getParentOfType<ModuleOp>()) {
-    if (std::optional<LocalDropImpl> dropImpl =
-            getLocalDropImpl(*placeType, module)) {
-      Type selfType = rust::mir::TypedRefType::get(
-          context, rust::mir::RustMutability::Mut, *placeType);
-      Value selfRef =
-          mlir::rust::createOp<rust::mir::BorrowOp>(
-              builder, loc, selfType, address->slot,
-              rust::mir::RustBorrowKindAttr::get(
-                  context, rust::mir::RustBorrowKind::Mut),
-              rust::mir::RustMutabilityAttr::get(
-                  context, rust::mir::RustMutability::Mut),
-              StringAttr(), spanAttr)
-              .getResult();
-
-      mlir::rust::createOp<rust::mir::TypedCallOp>(
-          builder, loc, TypeRange(),
-          FlatSymbolRefAttr::get(context, dropImpl->typedSymbol),
-          ValueRange{selfRef}, builder.getStringAttr(dropImpl->rustName),
-          rust::mir::RustAbiAttr::get(context, rust::mir::RustAbi::Rust),
-          StringAttr(), StringAttr(), StringAttr(), StringAttr(), StringAttr(),
-          StringAttr(), BoolAttr(), op.getTargetAttr(), op.getUnwindAttr(),
-          spanAttr);
-      createTypedGoto(builder, loc, static_cast<int64_t>(op.getTarget()),
-                      spanAttr);
-      return success();
-    }
-  }
-
-  op.emitError("cannot lift drop for type requiring unsupported drop glue: ")
-      << *placeType;
-  return failure();
+  return emitDropGlueTo(*placeType, address, ctx, loc, spanAttr, target,
+                        callAttrs);
 }
 
 bool isNoOpStatement(Operation *op) {
@@ -1888,6 +2309,19 @@ struct LiftTypedMIRPass
       llvm::StringSet<> addressTakenLocals = collectAddressTakenLocals(func);
       llvm::StringMap<LocalSlot> slots;
       Region &mirBody = func.getBody();
+      int64_t nextSyntheticBlock = 0;
+      for (Operation &child : mirBody.front()) {
+        auto blockOp = dyn_cast<rust::mir::BlockOp>(child);
+        if (!blockOp)
+          continue;
+        IntegerAttr index = blockOp.getIndexAttr();
+        if (!index)
+          continue;
+        int64_t blockIndex = static_cast<int64_t>(index.getInt());
+        if (blockIndex >= nextSyntheticBlock)
+          nextSyntheticBlock = blockIndex + 1;
+      }
+
       for (Operation &child : mirBody.front()) {
         auto local = dyn_cast<rust::mir::LocalOp>(child);
         if (!local)
@@ -1983,7 +2417,11 @@ struct LiftTypedMIRPass
             mirOp.emitError("cannot lift unsupported MIR operation");
             sawFailure = true;
           } else if (auto drop = dyn_cast<rust::mir::DropOp>(mirOp)) {
-            if (failed(lowerDrop(drop, builder, slots)))
+            DropLoweringContext dropContext{module, builder, slots,
+                                            &typedBody.front(),
+                                            nextSyntheticBlock,
+                                            drop.getOperation()};
+            if (failed(lowerDrop(drop, dropContext)))
               sawFailure = true;
             hasTypedTerminator = true;
           } else if (auto inlineAsm = dyn_cast<rust::mir::InlineAsmOp>(mirOp)) {

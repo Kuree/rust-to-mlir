@@ -20,6 +20,7 @@
 #include "mlir/Transforms/DialectConversion.h"
 #include "llvm/ADT/APInt.h"
 #include "llvm/ADT/DenseMap.h"
+#include "llvm/ADT/DenseSet.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 
@@ -191,6 +192,69 @@ Operation *findTypedTerminator(Block &block) {
   return nullptr;
 }
 
+void appendTypedTerminatorSuccessors(Operation *terminator,
+                                     SmallVectorImpl<int64_t> &successors) {
+  if (auto gotoOp = dyn_cast_or_null<rust::mir::TypedGotoOp>(terminator)) {
+    successors.push_back(static_cast<int64_t>(gotoOp.getTarget()));
+    return;
+  }
+
+  if (auto switchOp =
+          dyn_cast_or_null<rust::mir::TypedSwitchIntOp>(terminator)) {
+    DictionaryAttr targets = switchOp.getTargetsAttr();
+    if (!targets)
+      return;
+    for (NamedAttribute attr : targets)
+      if (auto target = dyn_cast<IntegerAttr>(attr.getValue()))
+        successors.push_back(target.getInt());
+  }
+}
+
+SmallVector<rust::mir::TypedBlockOp> filterReachableTypedBlocks(
+    SmallVectorImpl<rust::mir::TypedBlockOp> &typedBlocks) {
+  SmallVector<rust::mir::TypedBlockOp> reachableBlocks;
+  if (typedBlocks.empty())
+    return reachableBlocks;
+
+  llvm::DenseMap<int64_t, size_t> positions;
+  for (auto [position, typedBlock] : llvm::enumerate(typedBlocks))
+    positions[static_cast<int64_t>(typedBlock.getIndex())] = position;
+
+  llvm::DenseSet<int64_t> reachable;
+  SmallVector<int64_t> worklist;
+  worklist.push_back(static_cast<int64_t>(typedBlocks.front().getIndex()));
+  while (!worklist.empty()) {
+    int64_t index = worklist.pop_back_val();
+    if (!reachable.insert(index).second)
+      continue;
+
+    auto positionIt = positions.find(index);
+    if (positionIt == positions.end())
+      continue;
+
+    rust::mir::TypedBlockOp typedBlock = typedBlocks[positionIt->second];
+    Region &region = typedBlock.getBody();
+    Operation *terminator = nullptr;
+    if (!region.empty())
+      terminator = findTypedTerminator(region.front());
+
+    SmallVector<int64_t> successors;
+    appendTypedTerminatorSuccessors(terminator, successors);
+    if (!terminator && positionIt->second + 1 < typedBlocks.size())
+      successors.push_back(
+          static_cast<int64_t>(typedBlocks[positionIt->second + 1].getIndex()));
+
+    for (int64_t successor : successors)
+      if (positions.contains(successor))
+        worklist.push_back(successor);
+  }
+
+  for (rust::mir::TypedBlockOp typedBlock : typedBlocks)
+    if (reachable.contains(static_cast<int64_t>(typedBlock.getIndex())))
+      reachableBlocks.push_back(typedBlock);
+  return reachableBlocks;
+}
+
 LogicalResult
 lowerTypedTerminator(Operation *op,
                      const llvm::DenseMap<int64_t, Block *> &blocks,
@@ -314,14 +378,27 @@ struct TypedBlockConversion
     if (!func || rootBlock->getBlock() != &func.getBody().front())
       return failure();
 
-    SmallVector<rust::mir::TypedBlockOp> typedBlocks =
+    SmallVector<rust::mir::TypedBlockOp> allTypedBlocks =
         collectTopLevelTypedBlocks(func);
+    if (allTypedBlocks.empty())
+      return failure();
+
+    llvm::DenseSet<int64_t> seenIndices;
+    for (rust::mir::TypedBlockOp typedBlock : allTypedBlocks) {
+      int64_t index = static_cast<int64_t>(typedBlock.getIndex());
+      if (!seenIndices.insert(index).second)
+        return typedBlock.emitError("duplicate rust.typed.block index");
+    }
+
+    SmallVector<Type> resultTypes;
+    if (failed(inferNestedReturnTypes(allTypedBlocks, resultTypes)))
+      return failure();
+
+    SmallVector<rust::mir::TypedBlockOp> typedBlocks =
+        filterReachableTypedBlocks(allTypedBlocks);
     if (typedBlocks.empty())
       return failure();
 
-    SmallVector<Type> resultTypes;
-    if (failed(inferNestedReturnTypes(typedBlocks, resultTypes)))
-      return failure();
     Region &body = func.getBody();
     Block &entry = body.front();
     int64_t firstIndex = static_cast<int64_t>(typedBlocks.front().getIndex());
@@ -329,8 +406,6 @@ struct TypedBlockConversion
     llvm::DenseMap<int64_t, Block *> blockMap;
     for (rust::mir::TypedBlockOp typedBlock : typedBlocks) {
       int64_t index = static_cast<int64_t>(typedBlock.getIndex());
-      if (blockMap.contains(index))
-        return typedBlock.emitError("duplicate rust.typed.block index");
       blockMap[index] = rewriter.createBlock(&body, body.end());
     }
 
@@ -360,7 +435,7 @@ struct TypedBlockConversion
       }
     }
 
-    for (rust::mir::TypedBlockOp typedBlock : typedBlocks)
+    for (rust::mir::TypedBlockOp typedBlock : allTypedBlocks)
       rewriter.eraseOp(typedBlock);
 
     if (!entry.empty() && entry.back().hasTrait<OpTrait::IsTerminator>())
