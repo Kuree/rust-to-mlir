@@ -201,6 +201,16 @@ def RustTyped_TypedDiscriminantOp : RustTyped_Op<"discriminant"> {
   let assemblyFormat = "$aggregate attr-dict `:` type($aggregate) `->` type($result)";
 }
 
+def RustTyped_TypedSetDiscriminantOp : RustTyped_Op<"set_discriminant"> {
+  let summary = "Set a typed Rust enum discriminant in place";
+  let arguments = (ins AnyType:$base,
+                       I64Attr:$variant_index,
+                       OptionalAttr<StrAttr>:$discriminant,
+                       OptionalAttr<StrAttr>:$span);
+  let assemblyFormat = "$base attr-dict `:` type($base)";
+  let hasVerifier = 1;
+}
+
 def RustTyped_IndexAddrOp : RustTyped_Op<"index_addr"> {
   let summary = "Compute the address of a typed Rust dynamic array or slice element";
   let arguments = (ins AnyType:$base, AnyType:$index,

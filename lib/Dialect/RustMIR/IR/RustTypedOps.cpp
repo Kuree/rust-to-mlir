@@ -285,6 +285,34 @@ LogicalResult FieldAddrOp::verify() {
   return success();
 }
 
+LogicalResult TypedSetDiscriminantOp::verify() {
+  Type baseElementType = getAddressElementType(getBase().getType());
+  if (!baseElementType)
+    return emitOpError("base must be a typed Rust local slot or place "
+                       "address");
+
+  int64_t variantIndex = getVariantIndex();
+  if (variantIndex < 0)
+    return emitOpError("variant index must be non-negative");
+
+  if (auto adtType = dyn_cast<AdtType>(baseElementType)) {
+    if (adtType.getVariants().size() <= 1)
+      return emitOpError("base element type must be a multi-variant ADT");
+    if (static_cast<size_t>(variantIndex) >= adtType.getVariants().size())
+      return emitOpError("variant index is out of range for base element type");
+    return success();
+  }
+
+  if (auto structType = dyn_cast<LLVM::LLVMStructType>(baseElementType)) {
+    if (structType.getBody().empty() ||
+        !isa<IntegerType>(structType.getBody().front()))
+      return emitOpError("converted enum base must have an integer tag field");
+    return success();
+  }
+
+  return emitOpError("base element type must be a Rust enum ADT");
+}
+
 LogicalResult IndexAddrOp::verify() {
   Type baseElementType = getAddressElementType(getBase().getType());
   if (!baseElementType)

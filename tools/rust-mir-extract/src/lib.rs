@@ -22,7 +22,7 @@ use rustc_public::mir::{
 use rustc_public::target::{Endian, MachineInfo};
 use rustc_public::ty::{
     Abi, AdtDef, Allocation, ConstantKind, FloatTy, GenericArgKind, GenericArgs, IntTy, RigidTy,
-    Ty, TyConstKind, TyKind, UintTy,
+    Ty, TyConstKind, TyKind, UintTy, VariantIdx,
 };
 use rustc_public::CrateItem;
 use rustc_public_bridge::IndexedVal;
@@ -210,6 +210,13 @@ type RustMirRvalueAddressOfCreate = unsafe extern "C" fn(
     MlirOperation,
     MlirStringRef,
 ) -> MlirOperation;
+type RustMirSetDiscriminantCreate = unsafe extern "C" fn(
+    MlirLocation,
+    MlirOperation,
+    i64,
+    MlirStringRef,
+    MlirStringRef,
+) -> MlirOperation;
 type RustMirDebugOpCreate = unsafe extern "C" fn(
     MlirLocation,
     MlirStringRef,
@@ -342,6 +349,7 @@ struct MlirApi {
     rvalue_discriminant_create: RustMirRvalueDiscriminantCreate,
     rvalue_ref_create: RustMirRvalueRefCreate,
     rvalue_address_of_create: RustMirRvalueAddressOfCreate,
+    set_discriminant_create: RustMirSetDiscriminantCreate,
     debug_op_create: RustMirDebugOpCreate,
     goto_create: RustMirGotoCreate,
     switch_int_create: RustMirSwitchIntCreate,
@@ -441,6 +449,7 @@ impl MlirApi {
                 rvalue_discriminant_create: load_symbol(handle, "rustMirRvalueDiscriminantCreate")?,
                 rvalue_ref_create: load_symbol(handle, "rustMirRvalueRefCreate")?,
                 rvalue_address_of_create: load_symbol(handle, "rustMirRvalueAddressOfCreate")?,
+                set_discriminant_create: load_symbol(handle, "rustMirSetDiscriminantCreate")?,
                 debug_op_create: load_symbol(handle, "rustMirDebugOpCreate")?,
                 goto_create: load_symbol(handle, "rustMirGotoCreate")?,
                 switch_int_create: load_symbol(handle, "rustMirSwitchIntCreate")?,
@@ -640,6 +649,13 @@ enum MirStatement {
         span: String,
         place: MirPlace,
         rvalue: MirRvalue,
+    },
+    SetDiscriminant {
+        span: String,
+        place: MirPlace,
+        variant_index: usize,
+        discriminant: Option<String>,
+        debug: String,
     },
     Unsupported {
         span: String,
@@ -1757,7 +1773,7 @@ impl MirFunction {
                     .iter()
                     .enumerate()
                     .map(|(statement_index, statement)| {
-                        MirStatement::from_public(statement, statement_index)
+                        MirStatement::from_public(statement, statement_index, body.locals())
                     })
                     .collect();
                 let terminator =
@@ -1784,7 +1800,7 @@ impl MirFunction {
 }
 
 impl MirStatement {
-    fn from_public(statement: &Statement, index: usize) -> Self {
+    fn from_public(statement: &Statement, index: usize, locals: &[LocalDecl]) -> Self {
         let span = span_string(&statement.span);
         match &statement.kind {
             StatementKind::Assign(place, rvalue) => Self::Assign {
@@ -1792,6 +1808,19 @@ impl MirStatement {
                 span,
                 place: MirPlace::from_public(place),
                 rvalue: MirRvalue::from_public(rvalue),
+            },
+            StatementKind::SetDiscriminant {
+                place,
+                variant_index,
+            } => Self::SetDiscriminant {
+                span,
+                place: MirPlace::from_public(place),
+                variant_index: variant_index.to_index(),
+                discriminant: place
+                    .ty(locals)
+                    .ok()
+                    .and_then(|ty| discriminant_for_variant(ty, *variant_index)),
+                debug: format!("{:?}", statement.kind),
             },
             _ => {
                 let debug = format!("{:?}", statement.kind);
@@ -2255,6 +2284,24 @@ impl MlirEmitter {
                 let rvalue = self.rvalue_op(rvalue, span);
                 unsafe {
                     (self.api.assign_create)(self.location(span), *index as i64, place, rvalue)
+                }
+            }
+            MirStatement::SetDiscriminant {
+                span,
+                place,
+                variant_index,
+                discriminant,
+                debug,
+            } => {
+                let place = self.place_op(place, span);
+                unsafe {
+                    (self.api.set_discriminant_create)(
+                        self.location(span),
+                        place,
+                        *variant_index as i64,
+                        mlir_optional_string(discriminant.as_deref()),
+                        mlir_string(debug),
+                    )
                 }
             }
             MirStatement::Unsupported {
@@ -3146,6 +3193,13 @@ fn terminator_op_name(kind: &str) -> &'static str {
 
 fn discriminant_text(discr: &rustc_public::ty::Discr) -> String {
     discr.val.to_string()
+}
+
+fn discriminant_for_variant(ty: Ty, variant_index: VariantIdx) -> Option<String> {
+    let TyKind::RigidTy(RigidTy::Adt(def, _)) = ty.kind() else {
+        return None;
+    };
+    Some(discriminant_text(&def.discriminant_for_variant(variant_index)))
 }
 
 fn rvalue_op_name(kind: &str) -> &'static str {

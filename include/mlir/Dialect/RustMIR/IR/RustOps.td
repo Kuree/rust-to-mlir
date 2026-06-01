@@ -78,7 +78,16 @@ def Rust_AssignOp : Rust_Op<"assign", [NoTerminator, SingleBlock]> {
   let assemblyFormat = "$index attr-dict-with-keyword $body";
 }
 def Rust_FakeReadOp : Rust_MirrorOp<"fake_read", "MIR StatementKind::FakeRead">;
-def Rust_SetDiscriminantOp : Rust_MirrorOp<"set_discriminant", "MIR StatementKind::SetDiscriminant">;
+def Rust_SetDiscriminantOp : Rust_Op<"set_discriminant", [NoTerminator, SingleBlock]> {
+  let summary = "MIR StatementKind::SetDiscriminant";
+  let arguments = (ins I64Attr:$variant_index,
+                       OptionalAttr<StrAttr>:$discriminant,
+                       OptionalAttr<StrAttr>:$mir_kind,
+                       OptionalAttr<StrAttr>:$debug,
+                       OptionalAttr<StrAttr>:$span);
+  let regions = (region SizedRegion<1>:$body);
+  let assemblyFormat = "attr-dict-with-keyword $body";
+}
 def Rust_DeinitOp : Rust_MirrorOp<"deinit", "MIR StatementKind::Deinit">;
 def Rust_StorageLiveOp : Rust_MirrorOp<"storage_live", "MIR StatementKind::StorageLive">;
 def Rust_StorageDeadOp : Rust_MirrorOp<"storage_dead", "MIR StatementKind::StorageDead">;

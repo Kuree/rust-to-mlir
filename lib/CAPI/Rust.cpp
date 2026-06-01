@@ -952,6 +952,24 @@ MlirOperation rustMirRvalueAddressOfCreate(MlirLocation location,
   return wrapped;
 }
 
+MlirOperation rustMirSetDiscriminantCreate(MlirLocation location,
+                                           MlirOperation place,
+                                           int64_t variantIndex,
+                                           MlirStringRef discriminant,
+                                           MlirStringRef debug) {
+  MLIRContext *context = unwrap(location).getContext();
+  Builder builder(context);
+  OperationState state(unwrap(location), "rust.mir.set_discriminant");
+  state.addAttribute("mir_kind", builder.getStringAttr("SetDiscriminant"));
+  state.addAttribute("variant_index", builder.getI64IntegerAttr(variantIndex));
+  if (discriminant.length > 0)
+    addStringAttr(context, state, "discriminant", discriminant);
+  addStringAttr(context, state, "debug", debug);
+  MlirOperation wrapped = createRegionOperation(state);
+  appendOwnedChild(unwrap(wrapped), place);
+  return wrapped;
+}
+
 MlirOperation rustMirDebugOpCreate(MlirLocation location, MlirStringRef opName,
                                    MlirStringRef kind, MlirStringRef debug) {
   MLIRContext *context = unwrap(location).getContext();

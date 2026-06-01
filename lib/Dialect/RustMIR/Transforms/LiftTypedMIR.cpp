@@ -2265,6 +2265,42 @@ LogicalResult lowerDrop(rust::mir::DropOp op, DropLoweringContext &ctx) {
                         callAttrs);
 }
 
+LogicalResult lowerSetDiscriminant(rust::mir::SetDiscriminantOp op,
+                                   OpBuilder &builder,
+                                   llvm::StringMap<LocalSlot> &slots) {
+  auto place = dyn_cast_or_null<rust::mir::PlaceOp>(childAt(op, 0));
+  if (!place)
+    return op.emitError("expected set_discriminant place");
+
+  std::optional<Type> placeType = inferPlaceType(place, slots);
+  if (!placeType)
+    return op.emitError("failed to infer set_discriminant place type");
+
+  auto adtType = dyn_cast<rust::mir::AdtType>(*placeType);
+  if (!adtType)
+    return op.emitError("set_discriminant place must be an enum ADT");
+  if (!adtType.isInitialized() || adtType.getVariants().empty())
+    return op.emitError("set_discriminant place has uninitialized ADT type");
+
+  int64_t variantIndex = op.getVariantIndex();
+  if (variantIndex < 0 ||
+      static_cast<size_t>(variantIndex) >= adtType.getVariants().size())
+    return op.emitError("set_discriminant variant index out of range");
+  if (adtType.getVariants().size() <= 1)
+    return success();
+
+  std::optional<PlaceAddress> address =
+      materializePlaceAddress(place, builder, op.getLoc(), slots,
+                              op.getSpanAttr());
+  if (!address)
+    return op.emitError("failed to materialize set_discriminant place address");
+
+  mlir::rust::createOp<rust::mir::TypedSetDiscriminantOp>(
+      builder, op.getLoc(), address->slot, op.getVariantIndexAttr(),
+      op.getDiscriminantAttr(), op.getSpanAttr());
+  return success();
+}
+
 bool isNoOpStatement(Operation *op) {
   return isa<rust::mir::FakeReadOp, rust::mir::DeinitOp,
              rust::mir::StorageLiveOp,
@@ -2275,7 +2311,7 @@ bool isNoOpStatement(Operation *op) {
 }
 
 bool isKnownNonNoOpStatement(Operation *op) {
-  return isa<rust::mir::SetDiscriminantOp, rust::mir::IntrinsicOp>(op);
+  return isa<rust::mir::IntrinsicOp>(op);
 }
 
 struct LiftTypedMIRPass
@@ -2407,6 +2443,10 @@ struct LiftTypedMIRPass
             if (failed(lowerCall(call, builder, slots)))
               sawFailure = true;
             hasTypedTerminator = true;
+          } else if (auto setDiscriminant =
+                         dyn_cast<rust::mir::SetDiscriminantOp>(mirOp)) {
+            if (failed(lowerSetDiscriminant(setDiscriminant, builder, slots)))
+              sawFailure = true;
           } else if (isNoOpStatement(&mirOp)) {
             continue;
           } else if (isKnownNonNoOpStatement(&mirOp)) {

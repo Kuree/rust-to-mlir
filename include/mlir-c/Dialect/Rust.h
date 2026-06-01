@@ -161,6 +161,9 @@ MLIR_CAPI_EXPORTED MlirOperation rustMirRvalueAddressOfCreate(
 MLIR_CAPI_EXPORTED MlirOperation rustMirDebugOpCreate(
     MlirLocation location, MlirStringRef opName, MlirStringRef kind,
     MlirStringRef debug);
+MLIR_CAPI_EXPORTED MlirOperation rustMirSetDiscriminantCreate(
+    MlirLocation location, MlirOperation place, int64_t variantIndex,
+    MlirStringRef discriminant, MlirStringRef debug);
 MLIR_CAPI_EXPORTED MlirOperation rustMirGotoCreate(MlirLocation location,
                                                    int64_t target);
 MLIR_CAPI_EXPORTED MlirOperation rustMirSwitchIntCreate(

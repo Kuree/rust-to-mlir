@@ -18,6 +18,7 @@
 #include "mlir/IR/SymbolTable.h"
 #include "mlir/Pass/Pass.h"
 #include "mlir/Transforms/DialectConversion.h"
+#include "llvm/ADT/APInt.h"
 #include "llvm/ADT/STLExtras.h"
 #include "llvm/ADT/SmallVector.h"
 #include "llvm/ADT/StringExtras.h"
@@ -197,6 +198,40 @@ Value createI64One(OpBuilder &builder, Location loc) {
 Value createI64Constant(OpBuilder &builder, Location loc, int64_t value) {
   return mlir::rust::createOp<LLVM::ConstantOp>(builder, loc,
                                                 builder.getI64Type(), value)
+      .getRes();
+}
+
+std::optional<llvm::APInt> parseIntegerLiteral(StringRef text, unsigned width) {
+  text = text.trim();
+  if (text.consume_front("const"))
+    text = text.trim();
+
+  size_t space = text.find_first_of(" \t\r\n");
+  if (space != StringRef::npos)
+    text = text.take_front(space);
+
+  size_t suffix = text.find('_');
+  if (suffix != StringRef::npos)
+    text = text.take_front(suffix);
+
+  bool negative = text.consume_front("-");
+  if (text.empty())
+    return std::nullopt;
+
+  llvm::APInt value;
+  if (text.getAsInteger(10, value))
+    return std::nullopt;
+
+  value = value.zextOrTrunc(width);
+  if (negative)
+    value = -value;
+  return value;
+}
+
+Value createIntegerConstant(OpBuilder &builder, Location loc, IntegerType type,
+                            const llvm::APInt &value) {
+  return mlir::rust::createOp<LLVM::ConstantOp>(
+             builder, loc, type, IntegerAttr::get(type, value))
       .getRes();
 }
 
@@ -669,6 +704,56 @@ struct StoreOpConversion : public OpConversionPattern<rustmir::StoreOp> {
   }
 };
 
+struct TypedSetDiscriminantOpConversion
+    : public OpConversionPattern<rustmir::TypedSetDiscriminantOp> {
+  using OpConversionPattern<
+      rustmir::TypedSetDiscriminantOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::TypedSetDiscriminantOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    Type baseElementType = getAddressElementType(op.getBase().getType());
+    Type convertedBaseElementType =
+        getTypeConverter()->convertType(baseElementType);
+    auto enumType = dyn_cast_or_null<LLVM::LLVMStructType>(
+        convertedBaseElementType);
+    if (!enumType || enumType.getBody().empty())
+      return failure();
+
+    auto tagType = dyn_cast<IntegerType>(enumType.getBody().front());
+    if (!tagType)
+      return failure();
+
+    int64_t variantIndex = op.getVariantIndex();
+    if (variantIndex < 0)
+      return op.emitError("variant index must be non-negative");
+
+    llvm::APInt tagValue(tagType.getWidth(),
+                         static_cast<uint64_t>(variantIndex));
+    if (StringAttr discriminant = op.getDiscriminantAttr()) {
+      if (!discriminant.getValue().empty()) {
+        std::optional<llvm::APInt> parsed =
+            parseIntegerLiteral(discriminant.getValue(), tagType.getWidth());
+        if (!parsed)
+          return op.emitError("failed to parse enum discriminant value");
+        tagValue = *parsed;
+      }
+    }
+
+    Value tag = createIntegerConstant(rewriter, op.getLoc(), tagType, tagValue);
+    SmallVector<LLVM::GEPArg> indices = {LLVM::GEPArg(0), LLVM::GEPArg(0)};
+    Value tagAddress = mlir::rust::createOp<LLVM::GEPOp>(
+                           rewriter, op.getLoc(),
+                           LLVM::LLVMPointerType::get(op.getContext()),
+                           enumType, adaptor.getBase(), indices)
+                           .getRes();
+    mlir::rust::createOp<LLVM::StoreOp>(rewriter, op.getLoc(), tag,
+                                        tagAddress);
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct BorrowOpConversion : public OpConversionPattern<rustmir::BorrowOp> {
   using OpConversionPattern<rustmir::BorrowOp>::OpConversionPattern;
 
@@ -744,6 +829,7 @@ struct ConvertRustTypedMemoryToLLVMPass
     target.addLegalDialect<arith::ArithDialect, func::FuncDialect, LLVM::LLVMDialect,
                            rustmir::RustMIRDialect>();
     target.addIllegalOp<rustmir::LocalSlotOp, rustmir::LoadOp, rustmir::StoreOp,
+                        rustmir::TypedSetDiscriminantOp,
                         rustmir::FieldAddrOp, rustmir::IndexAddrOp,
                         rustmir::SliceFromArrayOp, rustmir::PtrMetadataOp,
                         rustmir::SubsliceOp, rustmir::SliceRangeOp,
@@ -782,6 +868,7 @@ struct ConvertRustTypedMemoryToLLVMPass
     RewritePatternSet patterns(context);
     patterns
         .add<LocalSlotOpConversion, LoadOpConversion, StoreOpConversion,
+             TypedSetDiscriminantOpConversion,
              FieldAddrOpConversion, IndexAddrOpConversion,
              SliceFromArrayOpConversion, PtrMetadataOpConversion,
              SubsliceOpConversion, SliceRangeOpConversion, BorrowOpConversion,

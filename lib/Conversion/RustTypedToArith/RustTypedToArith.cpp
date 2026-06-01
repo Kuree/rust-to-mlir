@@ -1313,6 +1313,22 @@ struct StoreConversion : public OpConversionPattern<rustmir::StoreOp> {
   }
 };
 
+struct TypedSetDiscriminantConversion
+    : public OpConversionPattern<rustmir::TypedSetDiscriminantOp> {
+  using OpConversionPattern<
+      rustmir::TypedSetDiscriminantOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::TypedSetDiscriminantOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    mlir::rust::createOp<rustmir::TypedSetDiscriminantOp>(
+        rewriter, op.getLoc(), adaptor.getBase(), op.getVariantIndexAttr(),
+        op.getDiscriminantAttr(), op.getSpanAttr());
+    rewriter.eraseOp(op);
+    return success();
+  }
+};
+
 struct BorrowOpConversion : public OpConversionPattern<rustmir::BorrowOp> {
   using OpConversionPattern<rustmir::BorrowOp>::OpConversionPattern;
 
@@ -2093,6 +2109,10 @@ struct ConvertRustTypedToArithPass
       return !needsTypeConversion(op.getValue().getType(), typeConverter) &&
              !needsTypeConversion(op.getSlot().getType(), typeConverter);
     });
+    target.addDynamicallyLegalOp<rustmir::TypedSetDiscriminantOp>(
+        [&](rustmir::TypedSetDiscriminantOp op) {
+          return !needsTypeConversion(op.getBase().getType(), typeConverter);
+        });
     target.addDynamicallyLegalOp<rustmir::BorrowOp>([&](rustmir::BorrowOp op) {
       return !needsTypeConversion(op.getSlot().getType(), typeConverter) &&
              !needsTypeConversion(op.getResult().getType(), typeConverter);
@@ -2240,7 +2260,8 @@ struct ConvertRustTypedToArithPass
         NegOpConversion, FloatNegOpConversion, NotOpConversion,
         IntCastOpConversion, NumericCastOpConversion,
         LocalSlotConversion, LoadConversion,
-        StoreConversion, BorrowOpConversion, RawAddressOpConversion,
+        StoreConversion, TypedSetDiscriminantConversion, BorrowOpConversion,
+        RawAddressOpConversion,
         MakeAggregateConversion, FieldConversion, DiscriminantConversion,
         FieldAddrConversion, IndexAddrConversion, SliceFromArrayConversion,
         PtrMetadataConversion, SubsliceConversion, SliceRangeConversion,
