@@ -137,10 +137,14 @@ LogicalResult ensureFuncDeclaration(ModuleOp module,
     auto func = dyn_cast<func::FuncOp>(symbol);
     if (!func)
       return call.emitError("callee symbol is not a func.func: ") << callee;
-    if (func.getFunctionType() != expectedType)
+    FunctionType actualType = func.getFunctionType();
+    bool pendingResultType =
+        actualType.getInputs() == expectedType.getInputs() &&
+        actualType.getResults().empty() && !expectedType.getResults().empty();
+    if (actualType != expectedType && !pendingResultType)
       return call.emitError("callee function type mismatch for ")
              << callee << ", expected " << expectedType << ", got "
-             << func.getFunctionType();
+             << actualType;
     return success();
   }
 

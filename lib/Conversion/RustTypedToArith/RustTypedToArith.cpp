@@ -58,6 +58,16 @@ bool isSignedRustInteger(Type type) {
   return false;
 }
 
+bool isLLVMCompatibleAggregateType(Type type) {
+  if (isa<IntegerType, FloatType, IndexType, LLVM::LLVMPointerType>(type))
+    return true;
+  if (auto structType = dyn_cast<LLVM::LLVMStructType>(type))
+    return llvm::all_of(structType.getBody(), isLLVMCompatibleAggregateType);
+  if (auto arrayType = dyn_cast<LLVM::LLVMArrayType>(type))
+    return isLLVMCompatibleAggregateType(arrayType.getElementType());
+  return false;
+}
+
 class RustScalarTypeConverter : public TypeConverter {
 public:
   explicit RustScalarTypeConverter(MLIRContext *context, unsigned pointerWidth)
@@ -112,12 +122,18 @@ public:
           return Type();
         elementTypes.push_back(converted);
       }
+      if (!llvm::all_of(elementTypes, isLLVMCompatibleAggregateType))
+        return rustmir::TypedTupleType::get(this->context,
+                                            ArrayRef<Type>(elementTypes));
       return LLVM::LLVMStructType::getLiteral(this->context, elementTypes);
     });
     addConversion([this](rustmir::TypedArrayType type) -> Type {
       Type elementType = convertType(type.getElementType());
       if (!elementType)
         return Type();
+      if (!isLLVMCompatibleAggregateType(elementType))
+        return rustmir::TypedArrayType::get(this->context, elementType,
+                                            type.getLength());
       return LLVM::LLVMArrayType::get(this->context, elementType,
                                       type.getLength());
     });
@@ -175,6 +191,12 @@ private:
 bool needsTypeConversion(Type type, const TypeConverter &converter) {
   Type converted = converter.convertType(type);
   return converted && converted != type;
+}
+
+bool hasTypeConversion(ValueRange values, const TypeConverter &converter) {
+  return llvm::any_of(values, [&](Value value) {
+    return needsTypeConversion(value.getType(), converter);
+  });
 }
 
 bool isIntegerLikeAfterConversion(Type type, const TypeConverter &converter) {
@@ -396,19 +418,22 @@ bool isLowerableMakeAggregate(rustmir::MakeAggregateOp op,
           static_cast<size_t>(variantIndexAttr.getInt()) >= variants.size())
         return false;
       Type variant = variants[variantIndexAttr.getInt()];
+      Type converted = converter.convertType(op.getResult().getType());
+      if (!converted || !isLLVMCompatibleAggregateType(converted))
+        return false;
       if (isa<rustmir::UnitType>(variant))
         return op.getValues().empty() &&
-               isa_and_nonnull<LLVM::LLVMStructType>(
-                   converter.convertType(op.getResult().getType()));
+               isa<LLVM::LLVMStructType>(converted);
       auto tupleType = dyn_cast<rustmir::TypedTupleType>(variant);
       return tupleType && tupleType.getElementTypes().size() ==
                               op.getValues().size() &&
-             isa_and_nonnull<LLVM::LLVMStructType>(
-                 converter.convertType(op.getResult().getType()));
+             isa<LLVM::LLVMStructType>(converted);
     }
   }
 
   Type converted = converter.convertType(op.getResult().getType());
+  if (!converted || !isLLVMCompatibleAggregateType(converted))
+    return false;
   if (auto structType = dyn_cast_or_null<LLVM::LLVMStructType>(converted))
     return structType.getBody().size() == op.getValues().size();
   if (auto arrayType = dyn_cast_or_null<LLVM::LLVMArrayType>(converted))
@@ -418,6 +443,11 @@ bool isLowerableMakeAggregate(rustmir::MakeAggregateOp op,
 
 bool isLowerableField(rustmir::FieldOp op, const TypeConverter &converter) {
   Type aggregateType = converter.convertType(op.getAggregate().getType());
+  Type resultType = converter.convertType(op.getResult().getType());
+  if (!aggregateType || !resultType ||
+      !isLLVMCompatibleAggregateType(aggregateType) ||
+      !isLLVMCompatibleAggregateType(resultType))
+    return false;
   int64_t index = static_cast<int64_t>(op.getIndex());
   if (IntegerAttr variantIndexAttr = op.getVariantIndexAttr()) {
     auto structType = dyn_cast_or_null<LLVM::LLVMStructType>(aggregateType);
@@ -1473,6 +1503,26 @@ struct MakeAggregateConversion
   }
 };
 
+struct MakeAggregateTypeConversion
+    : public OpConversionPattern<rustmir::MakeAggregateOp> {
+  using OpConversionPattern<rustmir::MakeAggregateOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::MakeAggregateOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    if (isLowerableMakeAggregate(op, *getTypeConverter()))
+      return failure();
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return failure();
+    auto converted = mlir::rust::createOp<rustmir::MakeAggregateOp>(
+        rewriter, op.getLoc(), resultType, adaptor.getValues(),
+        op.getVariantIndexAttr(), op.getDiscriminantAttr(), op.getSpanAttr());
+    rewriter.replaceOp(op, converted.getResult());
+    return success();
+  }
+};
+
 struct FieldConversion : public OpConversionPattern<rustmir::FieldOp> {
   using OpConversionPattern<rustmir::FieldOp>::OpConversionPattern;
 
@@ -1495,6 +1545,25 @@ struct FieldConversion : public OpConversionPattern<rustmir::FieldOp> {
                       ArrayRef<int64_t>(positionPath))
                       .getRes();
     rewriter.replaceOp(op, field);
+    return success();
+  }
+};
+
+struct FieldTypeConversion : public OpConversionPattern<rustmir::FieldOp> {
+  using OpConversionPattern<rustmir::FieldOp>::OpConversionPattern;
+
+  LogicalResult
+  matchAndRewrite(rustmir::FieldOp op, OpAdaptor adaptor,
+                  ConversionPatternRewriter &rewriter) const final {
+    if (isLowerableField(op, *getTypeConverter()))
+      return failure();
+    Type resultType = getTypeConverter()->convertType(op.getResult().getType());
+    if (!resultType)
+      return failure();
+    auto converted = mlir::rust::createOp<rustmir::FieldOp>(
+        rewriter, op.getLoc(), resultType, adaptor.getAggregate(),
+        op.getIndexAttr(), op.getVariantIndexAttr(), op.getSpanAttr());
+    rewriter.replaceOp(op, converted.getResult());
     return success();
   }
 };
@@ -2124,10 +2193,18 @@ struct ConvertRustTypedToArithPass
         });
     target.addDynamicallyLegalOp<rustmir::MakeAggregateOp>(
         [&](rustmir::MakeAggregateOp op) {
-          return !isLowerableMakeAggregate(op, typeConverter);
+          if (isLowerableMakeAggregate(op, typeConverter))
+            return false;
+          return !needsTypeConversion(op.getResult().getType(),
+                                      typeConverter) &&
+                 !hasTypeConversion(op.getValues(), typeConverter);
         });
     target.addDynamicallyLegalOp<rustmir::FieldOp>([&](rustmir::FieldOp op) {
-      return !isLowerableField(op, typeConverter);
+      if (isLowerableField(op, typeConverter))
+        return false;
+      return !needsTypeConversion(op.getAggregate().getType(),
+                                  typeConverter) &&
+             !needsTypeConversion(op.getResult().getType(), typeConverter);
     });
     target.addDynamicallyLegalOp<rustmir::TypedDiscriminantOp>(
         [&](rustmir::TypedDiscriminantOp op) {
@@ -2262,7 +2339,8 @@ struct ConvertRustTypedToArithPass
         LocalSlotConversion, LoadConversion,
         StoreConversion, TypedSetDiscriminantConversion, BorrowOpConversion,
         RawAddressOpConversion,
-        MakeAggregateConversion, FieldConversion, DiscriminantConversion,
+        MakeAggregateConversion, MakeAggregateTypeConversion,
+        FieldConversion, FieldTypeConversion, DiscriminantConversion,
         FieldAddrConversion, IndexAddrConversion, SliceFromArrayConversion,
         PtrMetadataConversion, SubsliceConversion, SliceRangeConversion,
         TypedReturnConversion,

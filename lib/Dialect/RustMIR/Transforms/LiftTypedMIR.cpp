@@ -183,6 +183,20 @@ bool isPanicArgumentsFromStrCallName(StringRef rustName) {
          rustName.ends_with("::from_str");
 }
 
+bool isClosureTraitCallName(StringRef rustName) {
+  return rustName == "std::ops::Fn::call" ||
+         rustName == "core::ops::Fn::call" ||
+         rustName == "std::ops::FnMut::call_mut" ||
+         rustName == "core::ops::FnMut::call_mut" ||
+         rustName == "std::ops::FnOnce::call_once" ||
+         rustName == "core::ops::FnOnce::call_once";
+}
+
+bool isClosureTraitCall(rust::mir::CallOp call) {
+  StringAttr calleeDef = call.getCalleeDefAttr();
+  return calleeDef && isClosureTraitCallName(calleeDef.getValue());
+}
+
 bool isRustIndexCallName(StringRef rustName) {
   return rustName.ends_with("ops::Index::index") ||
          rustName.ends_with("ops::IndexMut::index_mut");
@@ -1369,14 +1383,17 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     rust::mir::RustAggregateKind aggregateKind = aggregate.getAggregateKind();
     if ((aggregateKind != rust::mir::RustAggregateKind::Tuple &&
          aggregateKind != rust::mir::RustAggregateKind::Array &&
-         aggregateKind != rust::mir::RustAggregateKind::Adt) ||
+         aggregateKind != rust::mir::RustAggregateKind::Adt &&
+             aggregateKind != rust::mir::RustAggregateKind::Closure) ||
         aggregate.getBody().empty())
-      return assign.emitError("only tuple, array, and known ADT aggregate "
+      return assign.emitError("only tuple, array, ADT, and closure aggregate "
                               "rvalues can be lifted");
 
     auto tupleType = dyn_cast<rust::mir::TypedTupleType>(dest->elementType);
     auto arrayType = dyn_cast<rust::mir::TypedArrayType>(dest->elementType);
     auto adtType = dyn_cast<rust::mir::AdtType>(dest->elementType);
+    bool closureAggregate =
+        aggregateKind == rust::mir::RustAggregateKind::Closure;
     bool singleVariantAdt = isSingleVariantAdt(dest->elementType);
     if (aggregateKind == rust::mir::RustAggregateKind::Tuple && !tupleType)
       return assign.emitError("tuple aggregate destination is not a tuple");
@@ -1385,6 +1402,16 @@ LogicalResult lowerAssign(rust::mir::AssignOp assign, OpBuilder &builder,
     if (aggregateKind == rust::mir::RustAggregateKind::Adt && !tupleType &&
         !singleVariantAdt && !adtType)
       return assign.emitError("ADT aggregate destination is not an ADT");
+    if (closureAggregate && !tupleType &&
+        !isa<rust::mir::UnitType>(dest->elementType))
+      return assign.emitError(
+          "closure aggregate destination is not a capture tuple");
+    if (closureAggregate && isa<rust::mir::UnitType>(dest->elementType)) {
+      if (!aggregate.getBody().front().empty())
+        return assign.emitError(
+            "unit closure aggregate cannot have capture operands");
+      return success();
+    }
     IntegerAttr variantIndexAttr = aggregate.getVariantIndexAttr();
     if (aggregateKind == rust::mir::RustAggregateKind::Adt && adtType &&
         adtType.getVariants().size() > 1 && !variantIndexAttr)
@@ -1697,6 +1724,7 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
 
   Location loc = op.getLoc();
   StringAttr spanAttr = op.getSpanAttr();
+  bool closureTraitCall = isClosureTraitCall(op);
   SmallVector<Value> args;
   Block &callBody = op.getBody().front();
   for (auto indexedChild : llvm::enumerate(callBody)) {
@@ -1704,11 +1732,39 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
       continue;
     Operation *argOp = &indexedChild.value();
     Type expectedType = inferOperandType(argOp, slots).value_or(Type());
+    if (closureTraitCall && indexedChild.index() == 3 && expectedType &&
+        isa<rust::mir::UnitType>(expectedType))
+      continue;
     std::optional<Value> arg =
         materializeOperand(argOp, builder, loc, slots, expectedType, spanAttr);
     if (!arg)
       return op.emitError("failed to materialize call argument");
     args.push_back(*arg);
+  }
+
+  if (closureTraitCall) {
+    if (args.empty())
+      return op.emitError("closure trait call is missing receiver argument");
+    if (args.size() > 2)
+      return op.emitError("closure trait call has unexpected argument shape");
+
+    SmallVector<Value> callArgs;
+    callArgs.push_back(args.front());
+    if (args.size() == 2) {
+      auto tupleType = dyn_cast<rust::mir::TypedTupleType>(args[1].getType());
+      if (!tupleType)
+        return op.emitError("closure RustCall argument is not a tuple");
+      for (auto indexedType : llvm::enumerate(tupleType.getElementTypes())) {
+        IntegerAttr indexAttr = builder.getI64IntegerAttr(
+            static_cast<int64_t>(indexedType.index()));
+        Value field = mlir::rust::createOp<rust::mir::FieldOp>(
+                          builder, loc, indexedType.value(), args[1],
+                          indexAttr, IntegerAttr(), spanAttr)
+                          .getResult();
+        callArgs.push_back(field);
+      }
+    }
+    args = std::move(callArgs);
   }
 
   SmallVector<Type> resultTypes;

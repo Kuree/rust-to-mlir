@@ -946,6 +946,8 @@ impl MirType {
                     output: Box::new(Self::from_public_rec(sig.output(), building)),
                 }
             }
+            TyKind::RigidTy(RigidTy::Closure(_, args)) => closure_capture_type(&args, building)
+                .unwrap_or_else(|| Self::Debug(format!("{ty:?}"))),
             TyKind::RigidTy(RigidTy::Adt(def, args)) => Self::adt_from_public(def, &args, building),
             _ => Self::Debug(format!("{ty:?}")),
         }
@@ -992,6 +994,25 @@ impl MirType {
         building.pop();
         Self::Adt { name, variants }
     }
+}
+
+fn closure_capture_type(args: &GenericArgs, building: &mut Vec<String>) -> Option<MirType> {
+    let capture_ty = args.0.iter().rev().find_map(|arg| match arg {
+        GenericArgKind::Type(ty) => Some(*ty),
+        _ => None,
+    })?;
+    Some(MirType::from_public_rec(capture_ty, building))
+}
+
+fn closure_capture_identity(args: &GenericArgs) -> String {
+    args.0
+        .iter()
+        .rev()
+        .find_map(|arg| match arg {
+            GenericArgKind::Type(ty) => Some(type_identity(*ty)),
+            _ => None,
+        })
+        .unwrap_or_else(|| "()".to_string())
 }
 
 /// Number of usize fields used to model a `core::ops::Range*` family type, or
@@ -1078,6 +1099,9 @@ fn type_identity(ty: Ty) -> String {
                 .join(", ");
             format!("fn({inputs}) -> {}", type_identity(sig.output()))
         }
+        TyKind::RigidTy(RigidTy::Closure(def, args)) => {
+            format!("{}<{}>", def.name(), closure_capture_identity(&args))
+        }
         TyKind::RigidTy(RigidTy::Adt(def, args)) => adt_key(&def, &args),
         _ => format!("{ty:?}"),
     }
@@ -1142,6 +1166,34 @@ fn range_kind_symbol(generic_args: &GenericArgs) -> Option<&'static str> {
     None
 }
 
+fn is_closure_trait_call_name(name: &str) -> bool {
+    matches!(
+        name,
+        "std::ops::Fn::call"
+            | "core::ops::Fn::call"
+            | "std::ops::FnMut::call_mut"
+            | "core::ops::FnMut::call_mut"
+            | "std::ops::FnOnce::call_once"
+            | "core::ops::FnOnce::call_once"
+    )
+}
+
+fn closure_trait_call_target_name(rust_name: &str, generic_args: &GenericArgs) -> Option<String> {
+    if !is_closure_trait_call_name(rust_name) {
+        return None;
+    }
+
+    generic_args.0.iter().find_map(|arg| {
+        let GenericArgKind::Type(ty) = arg else {
+            return None;
+        };
+        let TyKind::RigidTy(RigidTy::Closure(def, _)) = ty.kind() else {
+            return None;
+        };
+        Some(def.name().to_string())
+    })
+}
+
 impl MirCallMetadata {
     fn from_call(
         operand: &Operand,
@@ -1170,11 +1222,12 @@ impl MirCallMetadata {
             .clone()
             .unwrap_or_else(|| def.name().to_string());
 
+        let rust_name = def.name();
         let range_kind = range_kind_symbol(&generic_args).map(String::from);
         let abi = normalize_abi(&value.abi);
         let bridge = resolved_mangled.as_deref().and_then(|symbol_key| {
             CAbiBridge::from_call(
-                &def.name(),
+                &rust_name,
                 symbol_key,
                 &abi,
                 value.c_variadic,
@@ -1183,10 +1236,12 @@ impl MirCallMetadata {
                 locals,
             )
         });
+        let name = closure_trait_call_target_name(&rust_name, &generic_args)
+            .unwrap_or_else(|| rust_name.clone());
 
         Some(Self {
-            name: def.name().to_string(),
-            def: def.name().to_string(),
+            name,
+            def: rust_name,
             ty: mangled,
             generic_args: format!("{generic_args:?}"),
             inputs,
