@@ -260,6 +260,7 @@ def Rust_AssertOp : Rust_Op<"assert", [NoTerminator, SingleBlock]> {
                        I64Attr:$target,
                        OptionalAttr<StrAttr>:$mir_kind,
                        OptionalAttr<StrAttr>:$debug,
+                       OptionalAttr<RustUnwindActionAttr>:$unwind,
                        OptionalAttr<StrAttr>:$span);
   let regions = (region SizedRegion<1>:$body);
   let assemblyFormat = "attr-dict-with-keyword $body";

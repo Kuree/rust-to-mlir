@@ -301,6 +301,7 @@ def RustTyped_TypedAssertOp : RustTyped_Op<"assert"> {
   let summary = "Typed Rust MIR assert";
   let arguments = (ins AnyType:$cond,
                        OptionalAttr<StrAttr>:$msg,
+                       OptionalAttr<RustUnwindActionAttr>:$unwind,
                        OptionalAttr<StrAttr>:$span);
   let assemblyFormat = "$cond attr-dict `:` type($cond)";
 }

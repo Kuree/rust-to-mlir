@@ -167,6 +167,22 @@ bool isCAbiCall(rust::mir::CallOp call) {
   return false;
 }
 
+bool hasUnreachableUnwind(rust::mir::CallOp call) {
+  rust::mir::RustUnwindActionAttr unwind = call.getUnwindAttr();
+  return unwind &&
+         unwind.getValue() == rust::mir::RustUnwindAction::Unreachable;
+}
+
+bool isPanicFmtCallName(StringRef rustName) {
+  return rustName == "std::rt::panic_fmt" ||
+         rustName.ends_with("::panicking::panic_fmt");
+}
+
+bool isPanicArgumentsFromStrCallName(StringRef rustName) {
+  return rustName.contains("std::fmt::Arguments") &&
+         rustName.ends_with("::from_str");
+}
+
 bool isRustIndexCallName(StringRef rustName) {
   return rustName.ends_with("ops::Index::index") ||
          rustName.ends_with("ops::IndexMut::index_mut");
@@ -260,6 +276,22 @@ llvm::StringSet<> collectAddressTakenLocals(rust::mir::FuncOp func) {
   });
   func.walk([&](rust::mir::DropOp drop) {
     markAddressTakenPlace(childAt(drop, 0), locals);
+  });
+  return locals;
+}
+
+llvm::StringSet<> collectPanicAbortFormattingLocals(rust::mir::FuncOp func) {
+  llvm::StringSet<> locals;
+  func.walk([&](rust::mir::CallOp call) {
+    if (!hasUnreachableUnwind(call))
+      return;
+    std::optional<std::string> rustName = extractCallRustName(call);
+    if (!rustName || !isPanicArgumentsFromStrCallName(*rustName))
+      return;
+
+    auto destination = dyn_cast_or_null<rust::mir::PlaceOp>(childAt(call, 1));
+    if (std::optional<std::string> localName = getPlaceLocalName(destination))
+      locals.insert(*localName);
   });
   return locals;
 }
@@ -811,7 +843,8 @@ std::optional<Value> createCheckedRangeCompare(OpBuilder &builder, Location loc,
   if (!condition)
     return std::nullopt;
   mlir::rust::createOp<rust::mir::TypedAssertOp>(
-      builder, loc, *condition, builder.getStringAttr(message), spanAttr);
+      builder, loc, *condition, builder.getStringAttr(message),
+      rust::mir::RustUnwindActionAttr(), spanAttr);
   return *condition;
 }
 
@@ -1619,14 +1652,36 @@ LogicalResult lowerGotoLike(TargetOpT op, OpBuilder &builder) {
 LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
                         llvm::StringMap<LocalSlot> &slots) {
   std::optional<std::string> rustName = extractCallRustName(op);
-  std::optional<uint64_t> target = op.getTarget();
   auto destination = dyn_cast_or_null<rust::mir::PlaceOp>(childAt(op, 1));
-  if (!target)
-    return op.emitError("cannot lift call without return target yet");
   if (!destination)
     return op.emitError("expected call destination place");
+  std::optional<uint64_t> target = op.getTarget();
 
-  if (rustName) {
+  if (rustName && hasUnreachableUnwind(op)) {
+    StringRef rustNameRef(*rustName);
+    if (target && isPanicArgumentsFromStrCallName(rustNameRef)) {
+      mlir::rust::createOp<rust::mir::TypedGotoOp>(
+          builder, op.getLoc(),
+          builder.getI64IntegerAttr(static_cast<int64_t>(*target)),
+          op.getSpanAttr());
+      return success();
+    }
+    if (!target && isPanicFmtCallName(rustNameRef)) {
+      rust::mir::RustAbiAttr abiAttr =
+          rust::mir::RustAbiAttr::get(op.getContext(), rust::mir::RustAbi::C);
+      mlir::rust::createOp<rust::mir::TypedCallOp>(
+          builder, op.getLoc(), TypeRange(),
+          FlatSymbolRefAttr::get(op.getContext(), "__rtl_abort"), ValueRange(),
+          builder.getStringAttr("__rtl_abort"), abiAttr, StringAttr(),
+          StringAttr(), StringAttr(), StringAttr(), StringAttr(), StringAttr(),
+          BoolAttr(), IntegerAttr(), op.getUnwindAttr(), op.getSpanAttr());
+      mlir::rust::createOp<rust::mir::TypedUnreachableOp>(
+          builder, op.getLoc(), op.getSpanAttr());
+      return success();
+    }
+  }
+
+  if (rustName && target) {
     StringRef rustNameRef(*rustName);
     if (isRangeInclusiveNewCallName(rustNameRef))
       return lowerRangeInclusiveNewCall(op, builder, slots, destination,
@@ -1660,6 +1715,9 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
   std::optional<Type> destinationType = inferPlaceType(destination, slots);
   if (!destinationType)
     return op.emitError("failed to infer call destination type");
+  if (!target && !isa<rust::mir::NeverType>(*destinationType))
+    return op.emitError(
+        "cannot lift call without return target unless destination is never");
   StringAttr bridgeSymbol = op.getCalleeBridgeSymbolAttr();
   bool bridgeUsesOutPointer = bridgeSymbol && isOptionAdtType(*destinationType);
   if (!isa<rust::mir::UnitType, rust::mir::NeverType>(*destinationType) &&
@@ -1701,9 +1759,14 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
       createStore(builder, loc, typedCall->getResult(0), dest->slot);
     }
 
-    mlir::rust::createOp<rust::mir::TypedGotoOp>(
-        builder, loc, builder.getI64IntegerAttr(static_cast<int64_t>(*target)),
-        spanAttr);
+    if (target) {
+      mlir::rust::createOp<rust::mir::TypedGotoOp>(
+          builder, loc,
+          builder.getI64IntegerAttr(static_cast<int64_t>(*target)), spanAttr);
+    } else {
+      mlir::rust::createOp<rust::mir::TypedUnreachableOp>(builder, loc,
+                                                          spanAttr);
+    }
     return success();
   }
 
@@ -1739,9 +1802,14 @@ LogicalResult lowerCall(rust::mir::CallOp op, OpBuilder &builder,
     createStore(builder, loc, typedCall->getResult(0), dest->slot);
   }
 
-  mlir::rust::createOp<rust::mir::TypedGotoOp>(
-      builder, loc, builder.getI64IntegerAttr(static_cast<int64_t>(*target)),
-      spanAttr);
+  if (target) {
+    mlir::rust::createOp<rust::mir::TypedGotoOp>(
+        builder, loc, builder.getI64IntegerAttr(static_cast<int64_t>(*target)),
+        spanAttr);
+  } else {
+    mlir::rust::createOp<rust::mir::TypedUnreachableOp>(builder, loc,
+                                                        spanAttr);
+  }
   return success();
 }
 
@@ -1786,7 +1854,7 @@ LogicalResult lowerAssert(rust::mir::AssertOp op, OpBuilder &builder,
 
   mlir::rust::createOp<rust::mir::TypedAssertOp>(
       builder, op.getLoc(), assertCond, getAssertMessageAttr(op, builder),
-      spanAttr);
+      op.getUnwindAttr(), spanAttr);
   mlir::rust::createOp<rust::mir::TypedGotoOp>(
       builder, op.getLoc(),
       builder.getI64IntegerAttr(static_cast<int64_t>(op.getTarget())),
@@ -2343,6 +2411,8 @@ struct LiftTypedMIRPass
       builder.setInsertionPointToEnd(&typedBody.front());
 
       llvm::StringSet<> addressTakenLocals = collectAddressTakenLocals(func);
+      llvm::StringSet<> panicAbortFormattingLocals =
+          collectPanicAbortFormattingLocals(func);
       llvm::StringMap<LocalSlot> slots;
       Region &mirBody = func.getBody();
       int64_t nextSyntheticBlock = 0;
@@ -2375,6 +2445,10 @@ struct LiftTypedMIRPass
           continue;
 
         BoolAttr addressTakenAttr;
+        if (auto nameAttr = local.getNameAttr())
+          if (panicAbortFormattingLocals.contains(nameAttr.getValue()))
+            continue;
+
         if (auto nameAttr = local.getNameAttr())
           if (addressTakenLocals.contains(nameAttr.getValue()))
             addressTakenAttr = builder.getBoolAttr(true);

@@ -1005,6 +1005,7 @@ MlirOperation rustMirSwitchIntCreate(MlirLocation location, MlirOperation discr,
 
 MlirOperation rustMirAssertCreate(MlirLocation location, MlirOperation cond,
                                   bool expected, int64_t target,
+                                  MlirStringRef unwind,
                                   MlirStringRef debug) {
   MLIRContext *context = unwrap(location).getContext();
   Builder builder(context);
@@ -1012,6 +1013,9 @@ MlirOperation rustMirAssertCreate(MlirLocation location, MlirOperation cond,
   state.addAttribute("expected", builder.getBoolAttr(expected));
   state.addAttribute("target", builder.getI64IntegerAttr(target));
   state.addAttribute("mir_kind", builder.getStringAttr("Assert"));
+  addEnumAttr<rustmir::RustUnwindAction, rustmir::RustUnwindActionAttr>(
+      context, state, "unwind", unwind,
+      rustmir::symbolizeRustUnwindAction);
   addStringAttr(context, state, "debug", debug);
   MlirOperation wrapped = createRegionOperation(state);
   appendOwnedChild(unwrap(wrapped), cond);

@@ -230,8 +230,14 @@ type RustMirSwitchIntCreate = unsafe extern "C" fn(
     MlirAttribute,
     MlirStringRef,
 ) -> MlirOperation;
-type RustMirAssertCreate =
-    unsafe extern "C" fn(MlirLocation, MlirOperation, bool, i64, MlirStringRef) -> MlirOperation;
+type RustMirAssertCreate = unsafe extern "C" fn(
+    MlirLocation,
+    MlirOperation,
+    bool,
+    i64,
+    MlirStringRef,
+    MlirStringRef,
+) -> MlirOperation;
 type RustMirDropCreate = unsafe extern "C" fn(
     MlirLocation,
     MlirOperation,
@@ -684,6 +690,7 @@ enum MirTerminator {
         cond: MirOperand,
         expected: bool,
         target: usize,
+        unwind: String,
         debug: String,
     },
     Call {
@@ -1205,6 +1212,9 @@ impl CAbiBridge {
         if abi != "rust" || c_variadic || !is_core_std_bridge_path(rust_name) {
             return None;
         }
+        if is_panic_fmt_path(rust_name) || is_panic_arguments_from_str_path(rust_name) {
+            return None;
+        }
 
         let arg_types = args
             .iter()
@@ -1337,6 +1347,14 @@ fn is_core_std_bridge_path(name: &str) -> bool {
     name.starts_with("core::") || name.starts_with("std::") || name.starts_with("alloc::")
 }
 
+fn is_panic_fmt_path(name: &str) -> bool {
+    name == "std::rt::panic_fmt" || name.ends_with("::panicking::panic_fmt")
+}
+
+fn is_panic_arguments_from_str_path(name: &str) -> bool {
+    name.contains("std::fmt::Arguments") && name.ends_with("::from_str")
+}
+
 fn bridge_symbol(symbol_key: &str) -> String {
     let mut symbol = String::from("__rust_to_mlir_bridge");
     for byte in symbol_key.bytes() {
@@ -1372,6 +1390,9 @@ fn rust_bridge_call_path(rust_name: &str, arg_types: &[String]) -> Option<String
         return None;
     }
 
+    let rust_name = strip_lifetime_generic_segments(rust_name);
+    let rust_name = rust_name.as_str();
+
     if let Some(start) = rust_name.find("::<impl ") {
         let after_marker = start + "::<impl ".len();
         let rest = &rust_name[after_marker..];
@@ -1390,6 +1411,35 @@ fn rust_bridge_call_path(rust_name: &str, arg_types: &[String]) -> Option<String
     }
 
     Some(format!("::{rust_name}"))
+}
+
+fn strip_lifetime_generic_segments(path: &str) -> String {
+    let mut output = String::new();
+    let mut index = 0;
+    while let Some(relative_start) = path[index..].find("::<") {
+        let start = index + relative_start;
+        output.push_str(&path[index..start]);
+
+        let generic_start = start + "::".len();
+        if path[generic_start..].starts_with("<'") {
+            if let Some(relative_end) = path[generic_start..].find('>') {
+                let end = generic_start + relative_end;
+                let args = &path[(generic_start + 1)..end];
+                if args
+                    .split(',')
+                    .all(|arg| arg.trim_start().starts_with('\''))
+                {
+                    index = end + 1;
+                    continue;
+                }
+            }
+        }
+
+        output.push_str("::");
+        index = start + "::".len();
+    }
+    output.push_str(&path[index..]);
+    output
 }
 
 fn rust_source_generic_args(args: &GenericArgs) -> Option<Vec<String>> {
@@ -1862,12 +1912,14 @@ impl MirTerminator {
                 cond,
                 expected,
                 target,
+                unwind,
                 ..
             } => Self::Assert {
                 span,
                 cond: MirOperand::from_public(cond),
                 expected: *expected,
                 target: *target,
+                unwind: unwind_action_symbol(unwind).to_string(),
                 debug: format!("{terminator:?}"),
             },
             TerminatorKind::Drop {
@@ -2361,6 +2413,7 @@ impl MlirEmitter {
                 cond,
                 expected,
                 target,
+                unwind,
                 debug,
             } => {
                 let cond = self.operand_op(cond, span);
@@ -2370,6 +2423,7 @@ impl MlirEmitter {
                         cond,
                         *expected,
                         *target as i64,
+                        mlir_string(unwind),
                         mlir_string(debug),
                     )
                 }

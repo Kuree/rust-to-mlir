@@ -1698,7 +1698,7 @@ struct TypedAssertConversion
                   ConversionPatternRewriter &rewriter) const final {
     mlir::rust::createOp<rustmir::TypedAssertOp>(
         rewriter, op.getLoc(), adaptor.getCond(), op.getMsgAttr(),
-        op.getSpanAttr());
+        op.getUnwindAttr(), op.getSpanAttr());
     rewriter.eraseOp(op);
     return success();
   }

@@ -171,7 +171,7 @@ MLIR_CAPI_EXPORTED MlirOperation rustMirSwitchIntCreate(
     MlirStringRef debug);
 MLIR_CAPI_EXPORTED MlirOperation rustMirAssertCreate(
     MlirLocation location, MlirOperation cond, bool expected, int64_t target,
-    MlirStringRef debug);
+    MlirStringRef unwind, MlirStringRef debug);
 MLIR_CAPI_EXPORTED MlirOperation rustMirDropCreate(
     MlirLocation location, MlirOperation place, int64_t target,
     MlirStringRef unwind, MlirStringRef debug,
