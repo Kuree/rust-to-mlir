@@ -16,7 +16,7 @@ use rustc_public::crate_def::CrateDef;
 use rustc_public::mir::alloc::GlobalAlloc;
 use rustc_public::mir::mono::Instance;
 use rustc_public::mir::{
-    AggregateKind, LocalDecl, Mutability, Operand, Place, ProjectionElem, Rvalue, Statement,
+    AggregateKind, Body, LocalDecl, Mutability, Operand, Place, ProjectionElem, Rvalue, Statement,
     StatementKind, TerminatorKind, UnwindAction,
 };
 use rustc_public::target::{Endian, MachineInfo};
@@ -26,7 +26,7 @@ use rustc_public::ty::{
 };
 use rustc_public::CrateItem;
 use rustc_public_bridge::IndexedVal;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::ffi::{CStr, CString};
 use std::fs;
@@ -625,6 +625,7 @@ struct TargetInfo {
 
 struct MirFunction {
     name: String,
+    rust_name: String,
     signature: String,
     item_kind: String,
     span: String,
@@ -1107,6 +1108,63 @@ fn type_identity(ty: Ty) -> String {
     }
 }
 
+fn body_contains_param_types(body: &Body) -> bool {
+    body.locals()
+        .iter()
+        .any(|local| ty_contains_param(local.ty))
+}
+
+fn ty_contains_param(ty: Ty) -> bool {
+    match ty.kind() {
+        TyKind::Param(_) | TyKind::Bound(_, _) => true,
+        TyKind::Alias(_, alias) => generic_args_contain_param(&alias.args),
+        TyKind::RigidTy(rigid) => match rigid {
+            RigidTy::Bool
+            | RigidTy::Char
+            | RigidTy::Int(_)
+            | RigidTy::Uint(_)
+            | RigidTy::Float(_)
+            | RigidTy::Foreign(_)
+            | RigidTy::Str
+            | RigidTy::Never => false,
+            RigidTy::Adt(_, args)
+            | RigidTy::FnDef(_, args)
+            | RigidTy::Closure(_, args)
+            | RigidTy::Coroutine(_, args)
+            | RigidTy::CoroutineClosure(_, args)
+            | RigidTy::CoroutineWitness(_, args) => generic_args_contain_param(&args),
+            RigidTy::Array(element, length) => {
+                ty_contains_param(element) || ty_const_contains_param(&length)
+            }
+            RigidTy::Pat(element, _) | RigidTy::Slice(element) => ty_contains_param(element),
+            RigidTy::RawPtr(pointee, _) | RigidTy::Ref(_, pointee, _) => ty_contains_param(pointee),
+            RigidTy::FnPtr(sig) => sig
+                .value
+                .inputs_and_output
+                .iter()
+                .any(|ty| ty_contains_param(*ty)),
+            RigidTy::Dynamic(_, _) => false,
+            RigidTy::Tuple(elements) => elements.iter().any(|ty| ty_contains_param(*ty)),
+        },
+    }
+}
+
+fn generic_args_contain_param(args: &GenericArgs) -> bool {
+    args.0.iter().any(|arg| match arg {
+        GenericArgKind::Lifetime(_) => false,
+        GenericArgKind::Type(ty) => ty_contains_param(*ty),
+        GenericArgKind::Const(value) => ty_const_contains_param(value),
+    })
+}
+
+fn ty_const_contains_param(value: &rustc_public::ty::TyConst) -> bool {
+    match value.kind() {
+        TyConstKind::Param(_) | TyConstKind::Bound(_, _) => true,
+        TyConstKind::Unevaluated(_, args) => generic_args_contain_param(args),
+        TyConstKind::Value(ty, _) | TyConstKind::ZSTValue(ty) => ty_contains_param(*ty),
+    }
+}
+
 enum MirOperand {
     Copy(MirPlace),
     Move(MirPlace),
@@ -1139,6 +1197,9 @@ struct MirCallMetadata {
     // derived from the callee's generic arguments (the enum symbol, e.g.
     // "FromToInclusive"); `None` for non-range calls.
     range_kind: Option<String>,
+    // Local generic function instances that must be emitted as monomorphized
+    // MIR bodies. This stays extractor-local and is not serialized into MLIR.
+    local_instance: Option<Instance>,
 }
 
 /// Maps a `core::ops::Range*` def path to the dialect range-kind enum symbol.
@@ -1215,14 +1276,26 @@ impl MirCallMetadata {
         // rustc's mangled name is the stable, canonical identity for the
         // resolved callee instance. For unresolvable callees (e.g. a generic
         // body's polymorphic call) fall back to the readable def path.
-        let resolved_mangled = Instance::resolve(def, &generic_args)
-            .ok()
-            .map(|instance| instance.mangled_name().to_string());
+        let resolved_instance = Instance::resolve(def, &generic_args).ok();
+        let resolved_mangled =
+            resolved_instance.map(|instance| instance.mangled_name().to_string());
         let mangled = resolved_mangled
             .clone()
             .unwrap_or_else(|| def.name().to_string());
-
         let rust_name = def.name();
+        let closure_target = closure_trait_call_target_name(&rust_name, &generic_args);
+        let local_instance = if closure_target.is_some() {
+            None
+        } else {
+            resolved_instance.and_then(|instance| {
+                let item = CrateItem::try_from(instance).ok()?;
+                if item.krate().is_local && item.requires_monomorphization() {
+                    Some(instance)
+                } else {
+                    None
+                }
+            })
+        };
         let range_kind = range_kind_symbol(&generic_args).map(String::from);
         let abi = normalize_abi(&value.abi);
         let bridge = resolved_mangled.as_deref().and_then(|symbol_key| {
@@ -1236,7 +1309,8 @@ impl MirCallMetadata {
                 locals,
             )
         });
-        let name = closure_trait_call_target_name(&rust_name, &generic_args)
+        let name = closure_target
+            .or_else(|| local_instance.as_ref().map(|_| mangled.clone()))
             .unwrap_or_else(|| rust_name.clone());
 
         Some(Self {
@@ -1250,6 +1324,7 @@ impl MirCallMetadata {
             c_variadic: value.c_variadic,
             bridge,
             range_kind,
+            local_instance,
         })
     }
 }
@@ -1683,11 +1758,35 @@ impl MirProgram {
     fn collect() -> Self {
         let target = TargetInfo::collect();
         let mut functions = Vec::new();
+        let mut emitted = BTreeSet::new();
+        let mut pending_instances = Vec::new();
         for item in rustc_public::all_local_items() {
             if !item.has_body() {
                 continue;
             }
-            functions.push(MirFunction::collect(item));
+            let body = item.expect_body();
+            if body_contains_param_types(&body) {
+                continue;
+            }
+            let function = MirFunction::collect_item_body(item, body);
+            if !emitted.insert(function.name.clone()) {
+                continue;
+            }
+            function.collect_local_instances(&mut pending_instances);
+            functions.push(function);
+        }
+
+        while let Some(instance) = pending_instances.pop() {
+            let symbol = instance.mangled_name().to_string();
+            if emitted.contains(&symbol) {
+                continue;
+            }
+            let Some(function) = MirFunction::collect_instance(instance) else {
+                continue;
+            };
+            emitted.insert(symbol);
+            function.collect_local_instances(&mut pending_instances);
+            functions.push(function);
         }
 
         Self { target, functions }
@@ -1774,6 +1873,12 @@ impl<T> __RustToMlirOption<T> {
 }
 
 impl MirFunction {
+    fn collect_local_instances(&self, pending: &mut Vec<Instance>) {
+        for block in &self.blocks {
+            block.terminator.collect_local_instances(pending);
+        }
+    }
+
     fn collect_core_std_call_bridges(&self, bridges: &mut BTreeMap<String, CAbiBridge>) {
         for block in &self.blocks {
             block.terminator.collect_core_std_call_bridges(bridges);
@@ -1788,6 +1893,20 @@ impl MirFunction {
 }
 
 impl MirTerminator {
+    fn collect_local_instances(&self, pending: &mut Vec<Instance>) {
+        if let Self::Call {
+            metadata:
+                Some(MirCallMetadata {
+                    local_instance: Some(instance),
+                    ..
+                }),
+            ..
+        } = self
+        {
+            pending.push(*instance);
+        }
+    }
+
     fn collect_core_std_call_bridges(&self, bridges: &mut BTreeMap<String, CAbiBridge>) {
         if let Self::Call {
             metadata: Some(metadata),
@@ -1830,8 +1949,38 @@ impl TargetInfo {
 }
 
 impl MirFunction {
-    fn collect(item: CrateItem) -> Self {
-        let body = item.expect_body();
+    fn collect_item_body(item: CrateItem, body: Body) -> Self {
+        Self::collect_body(
+            item.name().to_string(),
+            item.name().to_string(),
+            format!("{:?}", item.ty()),
+            format!("{:?}", item.kind()),
+            body,
+        )
+    }
+
+    fn collect_instance(instance: Instance) -> Option<Self> {
+        let item = CrateItem::try_from(instance).ok()?;
+        if !item.krate().is_local || !item.requires_monomorphization() {
+            return None;
+        }
+        let body = instance.body()?;
+        Some(Self::collect_body(
+            instance.mangled_name().to_string(),
+            instance.name().to_string(),
+            format!("{:?}", instance.ty()),
+            format!("{:?}", item.kind()),
+            body,
+        ))
+    }
+
+    fn collect_body(
+        name: String,
+        rust_name: String,
+        signature: String,
+        item_kind: String,
+        body: Body,
+    ) -> Self {
         let mut locals = Vec::new();
         let ret_local = body.ret_local();
         locals.push(MirLocal {
@@ -1893,9 +2042,10 @@ impl MirFunction {
             .collect();
 
         Self {
-            name: item.name().to_string(),
-            signature: format!("{:?}", item.ty()),
-            item_kind: format!("{:?}", item.kind()),
+            name,
+            rust_name,
+            signature,
+            item_kind,
             span: span_string(&body.span),
             arg_count: body.arg_locals().len(),
             locals,
@@ -2318,7 +2468,7 @@ impl MlirEmitter {
             (self.api.func_create)(
                 loc,
                 mlir_string(&function.name),
-                mlir_string(&function.name),
+                mlir_string(&function.rust_name),
                 mlir_string(&function.signature),
                 function.arg_count as i64,
                 mlir_string(&function.item_kind),
