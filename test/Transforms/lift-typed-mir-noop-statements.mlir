@@ -7,6 +7,7 @@ module {
     rust.mir.block 0 {
       rust.mir.storage_live {mir_kind = "StorageLive"}
       rust.mir.fake_read {mir_kind = "FakeRead"}
+      rust.mir.deinit {mir_kind = "Deinit"}
       rust.mir.retag {mir_kind = "Retag"}
       rust.mir.place_mention {mir_kind = "PlaceMention"}
       rust.mir.ascribe_user_type {mir_kind = "AscribeUserType"}
@@ -33,6 +34,7 @@ module {
 // CHECK: rust.typed.load
 // CHECK-NOT: storage_live
 // CHECK-NOT: fake_read
+// CHECK-NOT: deinit
 // CHECK-NOT: retag
 // CHECK-NOT: place_mention
 // CHECK-NOT: ascribe_user_type

@@ -2266,7 +2266,8 @@ LogicalResult lowerDrop(rust::mir::DropOp op, DropLoweringContext &ctx) {
 }
 
 bool isNoOpStatement(Operation *op) {
-  return isa<rust::mir::FakeReadOp, rust::mir::StorageLiveOp,
+  return isa<rust::mir::FakeReadOp, rust::mir::DeinitOp,
+             rust::mir::StorageLiveOp,
              rust::mir::StorageDeadOp, rust::mir::RetagOp,
              rust::mir::PlaceMentionOp, rust::mir::AscribeUserTypeOp,
              rust::mir::CoverageOp, rust::mir::ConstEvalCounterOp,
@@ -2274,8 +2275,7 @@ bool isNoOpStatement(Operation *op) {
 }
 
 bool isKnownNonNoOpStatement(Operation *op) {
-  return isa<rust::mir::SetDiscriminantOp, rust::mir::DeinitOp,
-             rust::mir::IntrinsicOp>(op);
+  return isa<rust::mir::SetDiscriminantOp, rust::mir::IntrinsicOp>(op);
 }
 
 struct LiftTypedMIRPass
